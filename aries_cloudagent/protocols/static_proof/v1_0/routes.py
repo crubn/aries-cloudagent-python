@@ -35,6 +35,13 @@ class V10StaticProof(OpenAPISchema):
         description="(Indy) presentation (also known as proof)",
     )
 
+class V10VerifyStaticProofResponseSchema(OpenAPISchema):
+    """Response schema of verify static proof"""
+    valid = fields.Boolean(
+        description="Is static proof valid"
+    )
+
+
 @docs(
     tags=["static proof"],
     summary="Create static proof",
@@ -76,13 +83,45 @@ async def create_proof(request: web.BaseRequest):
     ) as err:
         raise web.HTTPBadRequest(reason=err.roll_up)
 
+@docs(
+    tags=["static proof"],
+    summary="Verify static proof",
+)
+@request_schema(V10StaticProof())
+@response_schema(V10VerifyStaticProofResponseSchema())
+async def verify_proof(request: web.BaseRequest):
+    """
+    Request handler for verifying a static proof.
+
+    Args:
+        request: aiohttp request object
+    """
+    context: AdminRequestContext = request["context"]
+    profile = context.profile
+    body = await request.json()
+
+    try:
+        static_proof_manager = StaticProofManager(profile)
+        valid = await static_proof_manager.verify_presentation(
+            body.get("presentation_request"),
+            body.get("presentation")
+        )
+        result = {
+            "valid" : valid
+        }
+        return web.json_response(result)
+    except (BaseModelError, LedgerError, StorageError) as err:
+        raise web.HTTPBadRequest(reason=err.roll_up)
+
 
 async def register(app: web.Application):
     """Register routes"""
 
     app.add_routes(
         [
-            web.post("/static-proof/create",create_proof)
+            web.post("/static-proof/create",create_proof),
+            web.post("/static-proof/verify", verify_proof),
+
         ]
     )
 

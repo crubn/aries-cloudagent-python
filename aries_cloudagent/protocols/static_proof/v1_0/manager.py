@@ -15,7 +15,8 @@ from ....ledger.multiple_ledger.ledger_requests_executor import (
     IndyLedgerRequestsExecutor,
 )
 from ....revocation.models.revocation_registry import RevocationRegistry
-
+from ....indy.verifier import IndyVerifier
+from typing import Tuple
 
 LOGGER = logging.getLogger(__name__)
 
@@ -211,3 +212,108 @@ class StaticProofManager:
         )
         indy_proof = json.loads(indy_proof_json)
         return indy_proof
+
+    async def verify_presentation(
+        self,
+        indy_proof_request: dict,
+        indy_proof: dict,
+    ):
+        """
+        Verify proof
+
+        Args:
+            indy_proof_request: indy formatted proof request
+            indy_proof: indy formatted proof
+
+        Returns:
+            boolean: is proof valid
+        """
+        (
+            schemas,
+            cred_defs,
+            rev_reg_defs,
+            rev_reg_entries,
+        ) = await self.__process_identifiers(indy_proof["identifiers"])
+
+        verifier = self._profile.inject(IndyVerifier)
+        valid = await verifier.verify_presentation(
+                indy_proof_request,
+                indy_proof,
+                schemas,
+                cred_defs,
+                rev_reg_defs,
+                rev_reg_entries,
+            )
+
+        return valid
+        
+
+    async def __process_identifiers(
+            self,
+            identifiers: list,
+        ) -> Tuple[dict, dict, dict, dict]:
+            """Return schemas, cred_defs, rev_reg_defs, rev_reg_entries."""
+            schema_ids = []
+            cred_def_ids = []
+
+            schemas = {}
+            cred_defs = {}
+            rev_reg_defs = {}
+            rev_reg_entries = {}
+
+            for identifier in identifiers:
+                schema_ids.append(identifier["schema_id"])
+                cred_def_ids.append(identifier["cred_def_id"])
+                multitenant_mgr = self._profile.inject_or(BaseMultitenantManager)
+                if multitenant_mgr:
+                    ledger_exec_inst = IndyLedgerRequestsExecutor(self._profile)
+                else:
+                    ledger_exec_inst = self._profile.inject(IndyLedgerRequestsExecutor)
+                ledger = (
+                    await ledger_exec_inst.get_ledger_for_identifier(
+                        identifier["schema_id"],
+                        txn_record_type=GET_SCHEMA,
+                    )
+                )[1]
+                async with ledger:
+                    # Build schemas for anoncreds
+                    if identifier["schema_id"] not in schemas:
+                        schemas[identifier["schema_id"]] = await ledger.get_schema(
+                            identifier["schema_id"]
+                        )
+
+                    if identifier["cred_def_id"] not in cred_defs:
+                        cred_defs[
+                            identifier["cred_def_id"]
+                        ] = await ledger.get_credential_definition(
+                            identifier["cred_def_id"]
+                        )
+
+                    if identifier.get("rev_reg_id"):
+                        if identifier["rev_reg_id"] not in rev_reg_defs:
+                            rev_reg_defs[
+                                identifier["rev_reg_id"]
+                            ] = await ledger.get_revoc_reg_def(identifier["rev_reg_id"])
+
+                        if identifier.get("timestamp"):
+                            rev_reg_entries.setdefault(identifier["rev_reg_id"], {})
+
+                            if (
+                                identifier["timestamp"]
+                                not in rev_reg_entries[identifier["rev_reg_id"]]
+                            ):
+                                (
+                                    found_rev_reg_entry,
+                                    _found_timestamp,
+                                ) = await ledger.get_revoc_reg_entry(
+                                    identifier["rev_reg_id"], identifier["timestamp"]
+                                )
+                                rev_reg_entries[identifier["rev_reg_id"]][
+                                    identifier["timestamp"]
+                                ] = found_rev_reg_entry
+            return (
+                schemas,
+                cred_defs,
+                rev_reg_defs,
+                rev_reg_entries,
+            )
