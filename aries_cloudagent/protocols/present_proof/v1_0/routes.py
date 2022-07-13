@@ -16,7 +16,7 @@ from ....admin.request_context import AdminRequestContext
 from ....connections.models.conn_record import ConnRecord
 from ....indy.holder import IndyHolder, IndyHolderError
 from ....indy.models.cred_precis import IndyCredPrecisSchema
-from ....indy.models.proof import IndyPresSpecSchema
+from ....indy.models.proof import IndyPresSpecSchema, IndyProofSchema
 from ....indy.models.proof_request import IndyProofRequestSchema
 from ....indy.models.pres_preview import IndyPresPreview, IndyPresPreviewSchema
 from ....indy.util import generate_pr_nonce
@@ -139,6 +139,31 @@ class V10PresentationCreateRequestRequestSchema(AdminAPIMessageTracingSchema):
         description="Whether to trace event (default false)",
         required=False,
         example=False,
+    )
+
+
+class V10PresentationCreateProofRequestSchema(OpenAPISchema):
+    """Request schema for creating a static proof free of any request."""
+
+    proof_request = fields.Nested(IndyProofRequestSchema(), required=True)
+    presentation = fields.Nested(IndyPresSpecSchema(), required=True)
+
+
+class V10PresentationCreateProofResponseSchema(OpenAPISchema):
+    """Static proof."""
+
+    presentation_request = fields.Nested(IndyProofRequestSchema(),required=True)
+    presentation = fields.Nested(
+        IndyProofSchema(),
+        require=True,
+        description="(Indy) presentation (also known as proof)",
+    )
+
+
+class V10PresentationVerifyProofResponseSchema(OpenAPISchema):
+    """Response schema for verify static proof"""
+    verified = fields.Boolean(
+        description="Is static proof valid"
     )
 
 
@@ -527,6 +552,58 @@ async def presentation_exchange_create_request(request: web.BaseRequest):
     )
 
     return web.json_response(result)
+
+
+@docs(
+    tags=["present-proof v1.0"],
+    summary="Creates a static proof not bound to any request"
+)
+@request_schema(V10PresentationCreateProofRequestSchema())
+@response_schema(V10PresentationCreateProofResponseSchema(), 200, description="")
+async def presentation_exchange_create_proof(request: web.BaseRequest):
+    """
+    Request handler for creating a proof not bound to any request
+
+    Args:
+        request: aiohttp request object
+    """
+
+    context: AdminRequestContext = request["context"]
+    profile = context.profile
+    body = await request.json()
+
+    indy_proof_request = body.get("proof_request")
+    if not indy_proof_request.get("nonce"):
+        indy_proof_request["nonce"] = await generate_pr_nonce()
+
+    presentation_request_message = PresentationRequest(
+        comment="static proof",
+        request_presentations_attach=[
+            AttachDecorator.data_base64(
+                mapping=indy_proof_request,
+                ident=ATTACH_DECO_IDS[PRESENTATION_REQUEST],
+            )
+        ],
+    )
+    presentation_manager = PresentationManager(profile)
+    try:
+        indy_proof = await presentation_manager.create_proof(
+            presentation_request_message,
+            body.get("presentation"),
+        )
+        result = {
+            "presentation" : indy_proof,
+            "presentation_request" : indy_proof_request
+        }
+        return web.json_response(result)
+    except(
+            BaseModelError,
+            IndyHolderError,
+            LedgerError,
+            StorageError,
+            WalletNotFoundError,
+    ) as err:
+        raise web.HTTPBadRequest(reason=err.roll_up + str(presentation_request_message))
 
 
 @docs(
@@ -990,6 +1067,10 @@ async def register(app: web.Application):
             web.post(
                 "/present-proof/create-request",
                 presentation_exchange_create_request,
+            ),
+            web.post(
+                "/present-proof/create-proof",
+                presentation_exchange_create_proof,
             ),
             web.post(
                 "/present-proof/send-request",

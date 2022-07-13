@@ -46,10 +46,10 @@ class PresentationManager:
         self._profile = profile
 
     async def create_exchange_for_proposal(
-        self,
-        connection_id: str,
-        presentation_proposal_message: PresentationProposal,
-        auto_present: bool = None,
+            self,
+            connection_id: str,
+            presentation_proposal_message: PresentationProposal,
+            auto_present: bool = None,
     ):
         """
         Create a presentation exchange record for input presentation proposal.
@@ -83,7 +83,7 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def receive_proposal(
-        self, message: PresentationProposal, connection_record: ConnRecord
+            self, message: PresentationProposal, connection_record: ConnRecord
     ):
         """
         Receive a presentation proposal from message in context on manager creation.
@@ -109,12 +109,12 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def create_bound_request(
-        self,
-        presentation_exchange_record: V10PresentationExchange,
-        name: str = None,
-        version: str = None,
-        nonce: str = None,
-        comment: str = None,
+            self,
+            presentation_exchange_record: V10PresentationExchange,
+            name: str = None,
+            version: str = None,
+            nonce: str = None,
+            comment: str = None,
     ):
         """
         Create a presentation request bound to a proposal.
@@ -166,10 +166,10 @@ class PresentationManager:
         return presentation_exchange_record, presentation_request_message
 
     async def create_exchange_for_request(
-        self,
-        connection_id: str,
-        presentation_request_message: PresentationRequest,
-        auto_verify: bool = None,
+            self,
+            connection_id: str,
+            presentation_request_message: PresentationRequest,
+            auto_verify: bool = None,
     ):
         """
         Create a presentation exchange record for input presentation request.
@@ -201,8 +201,39 @@ class PresentationManager:
 
         return presentation_exchange_record
 
+    async def create_proof(
+            self,
+            presentation_request_message: PresentationRequest,
+            requested_credentials: dict,
+    ):
+        """
+        Create a static proof for the presentation request.
+
+        Args:
+            indy_proof_request:
+            presentation_request:
+
+        Returns:
+            Indy Proof
+
+        """
+        presentation_exchange_record = V10PresentationExchange(
+            initiator=V10PresentationExchange.INITIATOR_SELF,
+            role=V10PresentationExchange.ROLE_PROVER,
+            presentation_request=presentation_request_message.indy_proof_request(),
+            presentation_request_dict=presentation_request_message,
+            auto_verify=True,
+        )
+
+        indy_handler = IndyPresExchHandler(self._profile)
+        indy_proof = await indy_handler.return_presentation(
+            pres_ex_record=presentation_exchange_record,
+            requested_credentials=requested_credentials,
+        )
+        return indy_proof
+
     async def receive_request(
-        self, presentation_exchange_record: V10PresentationExchange
+            self, presentation_exchange_record: V10PresentationExchange
     ):
         """
         Receive a presentation request.
@@ -226,10 +257,10 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def create_presentation(
-        self,
-        presentation_exchange_record: V10PresentationExchange,
-        requested_credentials: dict,
-        comment: str = None,
+            self,
+            presentation_exchange_record: V10PresentationExchange,
+            requested_credentials: dict,
+            comment: str = None,
     ):
         """
         Create a presentation.
@@ -302,10 +333,10 @@ class PresentationManager:
         return presentation_exchange_record, presentation_message
 
     async def receive_presentation(
-        self,
-        message: Presentation,
-        connection_record: Optional[ConnRecord],
-        oob_record: Optional[OobRecord],
+            self,
+            message: Presentation,
+            connection_record: Optional[ConnRecord],
+            oob_record: Optional[OobRecord],
     ):
         """
         Receive a presentation, from message in context on manager creation.
@@ -360,11 +391,11 @@ class PresentationManager:
                 name = proof_req["requested_attributes"][reft]["name"]
                 value = attr_spec["raw"]
                 if not presentation_preview.has_attr_spec(
-                    cred_def_id=presentation["identifiers"][
-                        attr_spec["sub_proof_index"]
-                    ]["cred_def_id"],
-                    name=name,
-                    value=value,
+                        cred_def_id=presentation["identifiers"][
+                            attr_spec["sub_proof_index"]
+                        ]["cred_def_id"],
+                        name=name,
+                        value=value,
                 ):
                     presentation_exchange_record.state = (
                         V10PresentationExchange.STATE_ABANDONED
@@ -393,7 +424,7 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def verify_presentation(
-        self, presentation_exchange_record: V10PresentationExchange
+            self, presentation_exchange_record: V10PresentationExchange
     ):
         """
         Verify a presentation.
@@ -440,7 +471,7 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def send_presentation_ack(
-        self, presentation_exchange_record: V10PresentationExchange
+            self, presentation_exchange_record: V10PresentationExchange
     ):
         """
         Send acknowledgement of presentation receipt.
@@ -494,7 +525,7 @@ class PresentationManager:
             )
 
     async def receive_presentation_ack(
-        self, message: PresentationAck, connection_record: Optional[ConnRecord]
+            self, message: PresentationAck, connection_record: Optional[ConnRecord]
     ):
         """
         Receive a presentation ack, from message in context on manager creation.
@@ -529,7 +560,7 @@ class PresentationManager:
         return presentation_exchange_record
 
     async def receive_problem_report(
-        self, message: PresentationProblemReport, connection_id: str
+            self, message: PresentationProblemReport, connection_id: str
     ):
         """
         Receive problem report.
