@@ -232,6 +232,40 @@ class PresentationManager:
         )
         return indy_proof
 
+    async def verify_proof(
+        self,
+        presentation_request: dict,
+        presentation: dict
+    ):
+        """
+        Verify a static proof
+
+        Args:
+            presentation_exchange_record: presentation exchange record
+                with presentation request and presentation to verify
+
+        Returns:
+            boolean is proof valid
+        """
+        indy_handler = IndyPresExchHandler(self._profile)
+        (
+            schemas,
+            cred_defs,
+            rev_reg_defs,
+            rev_reg_entries,
+        ) = await indy_handler.process_pres_identifiers(presentation["identifiers"])
+
+        verifier = self._profile.inject(IndyVerifier)
+
+        return await verifier.verify_presentation(
+            presentation_request,
+            presentation,
+            schemas,
+            cred_defs,
+            rev_reg_defs,
+            rev_reg_entries,
+        )
+
     async def receive_request(
             self, presentation_exchange_record: V10PresentationExchange
     ):

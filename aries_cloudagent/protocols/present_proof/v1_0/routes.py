@@ -605,6 +605,40 @@ async def presentation_exchange_create_proof(request: web.BaseRequest):
     ) as err:
         raise web.HTTPBadRequest(reason=err.roll_up + str(presentation_request_message))
 
+@docs(
+    tags=["present-proof v1.0"],
+    summary="Verify a static proof not bound to any request"
+)
+@request_schema(V10PresentationCreateProofResponseSchema())
+@response_schema(V10PresentationVerifyProofResponseSchema(), 200, description="")
+async def presentation_exchange_verify_proof(request: web.BaseRequest):
+    """
+    Request handler for verifying a proof not bound to any request
+
+    Args:
+        request: aiohttp request object
+    """
+    context: AdminRequestContext = request["context"]
+    profile = context.profile
+    body = await request.json()
+
+    presentation_request = body.get("presentation_request")
+    presentation=body.get("presentation")
+
+    presentation_manager = PresentationManager(profile)
+    try:
+        verified = await presentation_manager.verify_proof(
+                presentation_request,
+                presentation
+        )
+        result = {
+            "verified" : verified
+        }
+        return web.json_response(result)
+    except (BaseModelError, LedgerError, StorageError) as err:
+        raise web.HTTPBadRequest(reason=err.roll_up)
+
+
 
 @docs(
     tags=["present-proof v1.0"],
@@ -1087,6 +1121,10 @@ async def register(app: web.Application):
             web.post(
                 "/present-proof/records/{pres_ex_id}/verify-presentation",
                 presentation_exchange_verify_presentation,
+            ),
+            web.post(
+                "/present-proof/verify-proof",
+                presentation_exchange_verify_proof
             ),
             web.post(
                 "/present-proof/records/{pres_ex_id}/problem-report",
