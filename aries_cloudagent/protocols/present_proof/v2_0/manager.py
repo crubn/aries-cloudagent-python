@@ -319,6 +319,7 @@ class V20PresManager:
                 pres_ex_record = await V20PresExRecord.retrieve_by_tag_filter(
                     session, {"thread_id": thread_id}, None
                 )
+                pres_ex_record.connection_id = conn_record.connection_id
 
         input_formats = message.formats
 
