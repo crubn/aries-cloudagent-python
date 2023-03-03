@@ -325,6 +325,7 @@ class PresentationManager:
                 ) = await V10PresentationExchange.retrieve_by_tag_filter(
                     session, {"thread_id": thread_id}, None
                 )
+                presentation_exchange_record.connection_id = connection_record.connection_id
 
         # Check for bait-and-switch in presented attribute values vs. proposal
         if presentation_exchange_record.presentation_proposal_dict:
