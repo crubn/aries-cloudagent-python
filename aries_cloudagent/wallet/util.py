@@ -1,10 +1,14 @@
 """Wallet utility functions."""
 
+import re
+
 import base58
 import base64
 
 import nacl.utils
 import nacl.bindings
+
+from ..core.profile import Profile
 
 
 def random_seed() -> bytes:
@@ -82,7 +86,38 @@ def full_verkey(did: str, abbr_verkey: str) -> str:
     )
 
 
+def default_did_from_verkey(verkey: str) -> str:
+    """Given a verkey, return the default indy did.
+
+    By default the did is the first 16 bytes of the verkey.
+    """
+    did = bytes_to_b58(b58_to_bytes(verkey)[:16])
+    return did
+
+
 def abbr_verkey(full_verkey: str, did: str = None) -> str:
     """Given a full verkey and DID, return the abbreviated verkey."""
     did_len = len(b58_to_bytes(did.split(":")[-1])) if did else 16
     return f"~{bytes_to_b58(b58_to_bytes(full_verkey)[did_len:])}"
+
+
+DID_EVENT_PREFIX = "acapy::ENDORSE_DID::"
+DID_ATTRIB_EVENT_PREFIX = "acapy::ENDORSE_DID_ATTRIB::"
+EVENT_LISTENER_PATTERN = re.compile(f"^{DID_EVENT_PREFIX}(.*)?$")
+ATTRIB_EVENT_LISTENER_PATTERN = re.compile(f"^{DID_ATTRIB_EVENT_PREFIX}(.*)?$")
+
+
+async def notify_endorse_did_event(profile: Profile, did: str, meta_data: dict):
+    """Send notification for a DID post-process event."""
+    await profile.notify(
+        DID_EVENT_PREFIX + did,
+        meta_data,
+    )
+
+
+async def notify_endorse_did_attrib_event(profile: Profile, did: str, meta_data: dict):
+    """Send notification for a DID ATTRIB post-process event."""
+    await profile.notify(
+        DID_ATTRIB_EVENT_PREFIX + did,
+        meta_data,
+    )

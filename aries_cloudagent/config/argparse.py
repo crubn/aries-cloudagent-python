@@ -18,6 +18,8 @@ from ..utils.tracing import trace_event
 from .error import ArgsParseError
 from .util import BoundedInt, ByteSize
 
+from .plugin_settings import PLUGIN_CONFIG_KEY
+
 CAT_PROVISION = "general"
 CAT_START = "start"
 CAT_UPGRADE = "upgrade"
@@ -72,7 +74,8 @@ def create_argument_parser(*, prog: str = None):
 
 
 def load_argument_groups(parser: ArgumentParser, *groups: Type[ArgumentGroup]):
-    """Log a set of argument groups into a parser.
+    """
+    Log a set of argument groups into a parser.
 
     Returns:
         A callable to convert loaded arguments into a settings dictionary
@@ -269,6 +272,12 @@ class DebugGroup(ArgumentGroup):
             ),
         )
         parser.add_argument(
+            "--debug-webhooks",
+            action="store_true",
+            env_var="ACAPY_DEBUG_WEBHOOKS",
+            help=("Emit protocol state object as webhook. " "Default: false."),
+        )
+        parser.add_argument(
             "--invite",
             action="store_true",
             env_var="ACAPY_INVITE",
@@ -421,6 +430,8 @@ class DebugGroup(ArgumentGroup):
             settings["debug.credentials"] = True
         if args.debug_presentations:
             settings["debug.presentations"] = True
+        if args.debug_webhooks:
+            settings["debug.webhooks"] = True
         if args.debug_seed:
             settings["debug.seed"] = args.debug_seed
         if args.invite:
@@ -535,6 +546,20 @@ class GeneralGroup(ArgumentGroup):
         )
 
         parser.add_argument(
+            "--block-plugin",
+            dest="blocked_plugins",
+            type=str,
+            action="append",
+            required=False,
+            metavar="<module>",
+            env_var="ACAPY_BLOCKED_PLUGIN",
+            help=(
+                "Block <module> plugin module from loading. Multiple "
+                "instances of this parameter can be specified."
+            ),
+        )
+
+        parser.add_argument(
             "--plugin-config",
             dest="plugin_config",
             type=str,
@@ -604,6 +629,36 @@ class GeneralGroup(ArgumentGroup):
             env_var="ACAPY_READ_ONLY_LEDGER",
             help="Sets ledger to read-only to prevent updates. Default: false.",
         )
+        parser.add_argument(
+            "--universal-resolver",
+            type=str,
+            nargs="?",
+            metavar="<universal_resolver_endpoint>",
+            env_var="ACAPY_UNIVERSAL_RESOLVER",
+            const="DEFAULT",
+            help="Enable resolution from a universal resolver.",
+        )
+        parser.add_argument(
+            "--universal-resolver-regex",
+            type=str,
+            nargs="+",
+            metavar="<did_regex>",
+            env_var="ACAPY_UNIVERSAL_RESOLVER_REGEX",
+            help=(
+                "Regex matching DIDs to resolve using the unversal resolver. "
+                "Multiple can be specified. "
+                "Defaults to a regex matching all DIDs resolvable by universal "
+                "resolver instance."
+            ),
+        )
+        parser.add_argument(
+            "--universal-resolver-bearer-token",
+            type=str,
+            nargs="?",
+            metavar="<universal_resolver_token>",
+            env_var="ACAPY_UNIVERSAL_RESOLVER_BEARER_TOKEN",
+            help="Bearer token if universal resolver instance requires authentication.",
+        ),
 
     def get_settings(self, args: Namespace) -> dict:
         """Extract general settings."""
@@ -611,19 +666,22 @@ class GeneralGroup(ArgumentGroup):
         if args.external_plugins:
             settings["external_plugins"] = args.external_plugins
 
+        if args.blocked_plugins:
+            settings["blocked_plugins"] = args.blocked_plugins
+
         if args.plugin_config:
             with open(args.plugin_config, "r") as stream:
-                settings["plugin_config"] = yaml.safe_load(stream)
+                settings[PLUGIN_CONFIG_KEY] = yaml.safe_load(stream)
 
         if args.plugin_config_values:
-            if "plugin_config" not in settings:
-                settings["plugin_config"] = {}
+            if PLUGIN_CONFIG_KEY not in settings:
+                settings[PLUGIN_CONFIG_KEY] = {}
 
             for value_str in chain(*args.plugin_config_values):
                 key, value = value_str.split("=", maxsplit=1)
                 value = yaml.safe_load(value)
                 deepmerge.always_merger.merge(
-                    settings["plugin_config"],
+                    settings[PLUGIN_CONFIG_KEY],
                     reduce(lambda v, k: {k: v}, key.split(".")[::-1], value),
                 )
 
@@ -640,6 +698,27 @@ class GeneralGroup(ArgumentGroup):
 
         if args.read_only_ledger:
             settings["read_only_ledger"] = True
+
+        if args.universal_resolver_regex and not args.universal_resolver:
+            raise ArgsParseError(
+                "--universal-resolver-regex cannot be used without --universal-resolver"
+            )
+
+        if args.universal_resolver_bearer_token and not args.universal_resolver:
+            raise ArgsParseError(
+                "--universal-resolver-bearer-token "
+                + "cannot be used without --universal-resolver"
+            )
+
+        if args.universal_resolver:
+            settings["resolver.universal"] = args.universal_resolver
+
+        if args.universal_resolver_regex:
+            settings["resolver.universal.supported"] = args.universal_resolver_regex
+
+        if args.universal_resolver_bearer_token:
+            settings["resolver.universal.token"] = args.universal_resolver_bearer_token
+
         return settings
 
 
@@ -680,7 +759,7 @@ class RevocationGroup(ArgumentGroup):
         parser.add_argument(
             "--monitor-revocation-notification",
             action="store_true",
-            env_var="ACAPY_NOTIFY_REVOCATION",
+            env_var="ACAPY_MONITOR_REVOCATION_NOTIFICATION",
             help=(
                 "Specifies that aca-py will emit webhooks on notification of "
                 "revocation received."
@@ -800,6 +879,18 @@ class LedgerGroup(ArgumentGroup):
                 " HyperLedger Indy ledgers."
             ),
         )
+        parser.add_argument(
+            "--accept-taa",
+            type=str,
+            nargs=2,
+            metavar=("<acceptance-mechanism>", "<taa-version>"),
+            env_var="ACAPY_ACCEPT_TAA",
+            help=(
+                "Specify the acceptance mechanism and taa version for which to accept"
+                " the transaction author agreement. If not provided, the TAA must"
+                " be accepted through the TTY or the admin API."
+            ),
+        )
 
     def get_settings(self, args: Namespace) -> dict:
         """Extract ledger settings."""
@@ -807,37 +898,64 @@ class LedgerGroup(ArgumentGroup):
         if args.no_ledger:
             settings["ledger.disabled"] = True
         else:
-            configured = False
+            single_configured = False
+            multi_configured = False
+            update_pool_name = False
             if args.genesis_url:
                 settings["ledger.genesis_url"] = args.genesis_url
-                configured = True
+                single_configured = True
             elif args.genesis_file:
                 settings["ledger.genesis_file"] = args.genesis_file
-                configured = True
+                single_configured = True
             elif args.genesis_transactions:
                 settings["ledger.genesis_transactions"] = args.genesis_transactions
-                configured = True
+                single_configured = True
             if args.genesis_transactions_list:
                 with open(args.genesis_transactions_list, "r") as stream:
                     txn_config_list = yaml.safe_load(stream)
                     ledger_config_list = []
                     for txn_config in txn_config_list:
                         ledger_config_list.append(txn_config)
+                        if "is_write" in txn_config and txn_config["is_write"]:
+                            if "genesis_url" in txn_config:
+                                settings["ledger.genesis_url"] = txn_config[
+                                    "genesis_url"
+                                ]
+                            elif "genesis_file" in txn_config:
+                                settings["ledger.genesis_file"] = txn_config[
+                                    "genesis_file"
+                                ]
+                            elif "genesis_transactions" in txn_config:
+                                settings["ledger.genesis_transactions"] = txn_config[
+                                    "genesis_transactions"
+                                ]
+                            else:
+                                raise ArgsParseError(
+                                    "No genesis information provided for write ledger"
+                                )
+                            if "id" in txn_config:
+                                settings["ledger.pool_name"] = txn_config["id"]
+                                update_pool_name = True
                     settings["ledger.ledger_config_list"] = ledger_config_list
-                    configured = True
-            if not configured:
+                    multi_configured = True
+            if not (single_configured or multi_configured):
                 raise ArgsParseError(
                     "One of --genesis-url --genesis-file, --genesis-transactions "
                     "or --genesis-transactions-list must be specified (unless "
                     "--no-ledger is specified to explicitly configure aca-py to"
                     " run with no ledger)."
                 )
-            if args.ledger_pool_name:
+            if single_configured and multi_configured:
+                raise ArgsParseError("Cannot configure both single- and multi-ledger.")
+            if args.ledger_pool_name and not update_pool_name:
                 settings["ledger.pool_name"] = args.ledger_pool_name
             if args.ledger_keepalive:
                 settings["ledger.keepalive"] = args.ledger_keepalive
             if args.ledger_socks_proxy:
                 settings["ledger.socks_proxy"] = args.ledger_socks_proxy
+            if args.accept_taa:
+                settings["ledger.taa_acceptance_mechanism"] = args.accept_taa[0]
+                settings["ledger.taa_acceptance_version"] = args.accept_taa[1]
 
         return settings
 
@@ -946,7 +1064,17 @@ class ProtocolGroup(ArgumentGroup):
             action="store_true",
             env_var="ACAPY_PUBLIC_INVITES",
             help=(
-                "Send invitations out, and receive connection requests, "
+                "Send invitations out using the public DID for the agent, "
+                "and receive connection requests solicited by invitations "
+                "which use the public DID. Default: false."
+            ),
+        )
+        parser.add_argument(
+            "--requests-through-public-did",
+            action="store_true",
+            env_var="ACAPY_REQUESTS_THROUGH_PUBLIC_DID",
+            help=(
+                "Allow agent to receive unsolicited connection requests, "
                 "using the public DID for the agent. Default: false."
             ),
         )
@@ -1041,6 +1169,13 @@ class ProtocolGroup(ArgumentGroup):
             settings["monitor_forward"] = args.monitor_forward
         if args.public_invites:
             settings["public_invites"] = True
+        if args.requests_through_public_did:
+            if not args.public_invites:
+                raise ArgsParseError(
+                    "--public-invites is required to use "
+                    "--requests-through-public-did"
+                )
+            settings["requests_through_public_did"] = True
         if args.timing:
             settings["timing.enabled"] = True
         if args.timing_log:
@@ -1155,22 +1290,6 @@ class TransportGroup(ArgumentGroup):
             ),
         )
         parser.add_argument(
-            "-oq",
-            "--outbound-queue",
-            dest="outbound_queue",
-            type=str,
-            env_var="ACAPY_OUTBOUND_TRANSPORT_QUEUE",
-            help=(
-                "Defines the location of the Outbound Queue Engine. This must be "
-                "a 'dotpath' to a Python module on the PYTHONPATH, followed by a "
-                "colon, followed by the name of a Python class that implements "
-                "BaseOutboundQueue. This commandline option is the official entry "
-                "point of ACA-py's pluggable queue interface. The default value is: "
-                "'aries_cloudagent.transport.outbound.queue.redis:RedisOutboundQueue'."
-                ""
-            ),
-        )
-        parser.add_argument(
             "-l",
             "--label",
             type=str,
@@ -1249,20 +1368,10 @@ class TransportGroup(ArgumentGroup):
             settings["transport.inbound_configs"] = args.inbound_transports
         else:
             raise ArgsParseError("-it/--inbound-transport is required")
-        if not args.outbound_transports and not args.outbound_queue:
-            raise ArgsParseError(
-                "-ot/--outbound-transport or -oq/--outbound-queue is required"
-            )
-        if args.outbound_transports and args.outbound_queue:
-            raise ArgsParseError(
-                "-ot/--outbound-transport and -oq/--outbound-queue are "
-                "not allowed together"
-            )
         if args.outbound_transports:
             settings["transport.outbound_configs"] = args.outbound_transports
-        if args.outbound_queue:
-            settings["transport.outbound_queue"] = args.outbound_queue
-
+        else:
+            raise ArgsParseError("-ot/--outbound-transport is required")
         settings["transport.enable_undelivered_queue"] = args.enable_undelivered_queue
 
         if args.label:
@@ -1409,6 +1518,15 @@ class WalletGroup(ArgumentGroup):
             ),
         )
         parser.add_argument(
+            "--wallet-allow-insecure-seed",
+            action="store_true",
+            env_var="ACAPY_WALLET_ALLOW_INSECURE_SEED",
+            help=(
+                "If this parameter is set, allows to use a custom seed "
+                "to create a local DID"
+            ),
+        )
+        parser.add_argument(
             "--wallet-key",
             type=str,
             metavar="<wallet-key>",
@@ -1528,6 +1646,8 @@ class WalletGroup(ArgumentGroup):
             settings["wallet.seed"] = args.seed
         if args.wallet_local_did:
             settings["wallet.local_did"] = True
+        if args.wallet_allow_insecure_seed:
+            settings["wallet.allow_insecure_seed"] = True
         if args.wallet_key:
             settings["wallet.key"] = args.wallet_key
         if args.wallet_rekey:
@@ -1603,13 +1723,27 @@ class MultitenantGroup(ArgumentGroup):
         parser.add_argument(
             "--multitenancy-config",
             type=str,
-            metavar="<multitenancy-config>",
+            nargs="+",
+            metavar="key=value",
             env_var="ACAPY_MULTITENANCY_CONFIGURATION",
             help=(
-                'Specify multitenancy configuration ("wallet_type" and "wallet_name"). '
-                'For example: "{"wallet_type":"askar-profile","wallet_name":'
-                '"askar-profile-name"}"'
-                '"wallet_name" is only used when "wallet_type" is "askar-profile"'
+                "Specify multitenancy configuration in key=value pairs. "
+                'For example: "wallet_type=askar-profile wallet_name=askar-profile-name" '
+                "Possible values: wallet_name, wallet_key, cache_size, "
+                'key_derivation_method. "wallet_name" is only used when '
+                '"wallet_type" is "askar-profile"'
+            ),
+        )
+        parser.add_argument(
+            "--base-wallet-routes",
+            type=str,
+            nargs="+",
+            required=False,
+            metavar="<REGEX>",
+            help=(
+                "Patterns matching admin routes that should be permitted for "
+                "base wallet. The base wallet is preconfigured to have access to "
+                "essential endpoints. This argument should be used sparingly."
             ),
         )
 
@@ -1630,17 +1764,40 @@ class MultitenantGroup(ArgumentGroup):
                 settings["multitenant.admin_enabled"] = True
 
             if args.multitenancy_config:
-                multitenancyConfig = json.loads(args.multitenancy_config)
+                # Legacy support
+                if (
+                    len(args.multitenancy_config) == 1
+                    and args.multitenancy_config[0][0] == "{"
+                ):
+                    multitenancy_config = json.loads(args.multitenancy_config[0])
+                    if multitenancy_config.get("wallet_type"):
+                        settings["multitenant.wallet_type"] = multitenancy_config.get(
+                            "wallet_type"
+                        )
 
-                if multitenancyConfig.get("wallet_type"):
-                    settings["multitenant.wallet_type"] = multitenancyConfig.get(
-                        "wallet_type"
-                    )
+                    if multitenancy_config.get("wallet_name"):
+                        settings["multitenant.wallet_name"] = multitenancy_config.get(
+                            "wallet_name"
+                        )
 
-                if multitenancyConfig.get("wallet_name"):
-                    settings["multitenant.wallet_name"] = multitenancyConfig.get(
-                        "wallet_name"
-                    )
+                    if multitenancy_config.get("cache_size"):
+                        settings["multitenant.cache_size"] = multitenancy_config.get(
+                            "cache_size"
+                        )
+
+                    if multitenancy_config.get("key_derivation_method"):
+                        settings[
+                            "multitenant.key_derivation_method"
+                        ] = multitenancy_config.get("key_derivation_method")
+
+                else:
+                    for value_str in args.multitenancy_config:
+                        key, value = value_str.split("=", maxsplit=1)
+                        value = yaml.safe_load(value)
+                        settings[f"multitenant.{key}"] = value
+
+            if args.base_wallet_routes:
+                settings["multitenant.base_wallet_routes"] = args.base_wallet_routes
 
         return settings
 
@@ -1691,6 +1848,17 @@ class EndorsementGroup(ArgumentGroup):
             ),
         )
         parser.add_argument(
+            "--endorser-endorse-with-did",
+            type=str,
+            metavar="<endorser-endorse-with-did>",
+            env_var="ACAPY_ENDORSER_ENDORSE_WITH_DID",
+            help=(
+                "For transaction Endorsers, specify the  DID to use to endorse "
+                "transactions.  The default (if not specified) is to use the "
+                "Endorser's Public DID."
+            ),
+        )
+        parser.add_argument(
             "--endorser-alias",
             type=str,
             metavar="<endorser-alias>",
@@ -1733,6 +1901,13 @@ class EndorsementGroup(ArgumentGroup):
             " the controller must invoke the endpoints required to create the"
             " revocation registry and assign to the cred def.)",
         )
+        parser.add_argument(
+            "--auto-promote-author-did",
+            action="store_true",
+            env_var="ACAPY_AUTO_PROMOTE_AUTHOR_DID",
+            help="For Authors, specify whether to automatically promote"
+            " a DID to the wallet public DID after writing to the ledger.",
+        )
 
     def get_settings(self, args: Namespace):
         """Extract endorser settings."""
@@ -1742,6 +1917,7 @@ class EndorsementGroup(ArgumentGroup):
         settings["endorser.auto_endorse"] = False
         settings["endorser.auto_write"] = False
         settings["endorser.auto_create_rev_reg"] = False
+        settings["endorser.auto_promote_author_did"] = False
 
         if args.endorser_protocol_role:
             if args.endorser_protocol_role == ENDORSER_AUTHOR:
@@ -1756,6 +1932,17 @@ class EndorsementGroup(ArgumentGroup):
                 raise ArgsParseError(
                     "Parameter --endorser-public-did should only be set for transaction "
                     "Authors"
+                )
+
+        if args.endorser_endorse_with_did:
+            if settings["endorser.endorser"]:
+                settings[
+                    "endorser.endorser_endorse_with_did"
+                ] = args.endorser_endorse_with_did
+            else:
+                raise ArgsParseError(
+                    "Parameter --endorser-endorse-with-did should only be set for "
+                    "transaction Endorsers"
                 )
 
         if args.endorser_alias:
@@ -1790,7 +1977,6 @@ class EndorsementGroup(ArgumentGroup):
             if settings["endorser.author"]:
                 settings["endorser.auto_request"] = True
             else:
-                pass
                 raise ArgsParseError(
                     "Parameter --auto-request-endorsement should only be set for "
                     "transaction Authors"
@@ -1800,7 +1986,6 @@ class EndorsementGroup(ArgumentGroup):
             if settings["endorser.endorser"]:
                 settings["endorser.auto_endorse"] = True
             else:
-                pass
                 raise ArgsParseError(
                     "Parameter --auto-endorser-transactions should only be set for "
                     "transaction Endorsers"
@@ -1810,7 +1995,6 @@ class EndorsementGroup(ArgumentGroup):
             if settings["endorser.author"]:
                 settings["endorser.auto_write"] = True
             else:
-                pass
                 raise ArgsParseError(
                     "Parameter --auto-write-transactions should only be set for "
                     "transaction Authors"
@@ -1820,16 +2004,24 @@ class EndorsementGroup(ArgumentGroup):
             if settings["endorser.author"]:
                 settings["endorser.auto_create_rev_reg"] = True
             else:
-                pass
                 raise ArgsParseError(
                     "Parameter --auto-create-revocation-transactions should only be set "
+                    "for transaction Authors"
+                )
+
+        if args.auto_promote_author_did:
+            if settings["endorser.author"]:
+                settings["endorser.auto_promote_author_did"] = True
+            else:
+                raise ArgsParseError(
+                    "Parameter --auto-promote-author-did should only be set "
                     "for transaction Authors"
                 )
 
         return settings
 
 
-@group(CAT_UPGRADE)
+@group(CAT_START, CAT_UPGRADE)
 class UpgradeGroup(ArgumentGroup):
     """ACA-Py Upgrade process settings."""
 
@@ -1861,6 +2053,17 @@ class UpgradeGroup(ArgumentGroup):
             ),
         )
 
+        parser.add_argument(
+            "--force-upgrade",
+            action="store_true",
+            env_var="ACAPY_UPGRADE_FORCE_UPGRADE",
+            help=(
+                "Forces the '—from-version' argument to override the version "
+                "retrieved from secure storage when calculating upgrades to "
+                "be run."
+            ),
+        )
+
     def get_settings(self, args: Namespace) -> dict:
         """Extract ACA-Py upgrade process settings."""
         settings = {}
@@ -1868,4 +2071,6 @@ class UpgradeGroup(ArgumentGroup):
             settings["upgrade.config_path"] = args.upgrade_config_path
         if args.from_version:
             settings["upgrade.from_version"] = args.from_version
+        if args.force_upgrade:
+            settings["upgrade.force_upgrade"] = args.force_upgrade
         return settings

@@ -62,6 +62,7 @@ class TestHttpTransport(AioHTTPTestCase):
         message: InboundMessage,
         can_respond: bool = False,
     ):
+        message.wait_processing_complete = async_mock.CoroutineMock()
         self.message_results.append((message.payload, message.receipt, can_respond))
         if self.result_event:
             self.result_event.set()
@@ -71,7 +72,6 @@ class TestHttpTransport(AioHTTPTestCase):
     def get_application(self):
         return self.transport.make_application()
 
-    @unittest_run_loop
     async def test_start_x(self):
         with async_mock.patch.object(
             test_module.web, "TCPSite", async_mock.MagicMock()
@@ -82,7 +82,6 @@ class TestHttpTransport(AioHTTPTestCase):
             with pytest.raises(test_module.InboundTransportSetupError):
                 await self.transport.start()
 
-    @unittest_run_loop
     async def test_send_message(self):
         await self.transport.start()
 
@@ -97,7 +96,6 @@ class TestHttpTransport(AioHTTPTestCase):
 
         await self.transport.stop()
 
-    @unittest_run_loop
     async def test_send_receive_message(self):
         await self.transport.start()
 
@@ -112,7 +110,6 @@ class TestHttpTransport(AioHTTPTestCase):
 
         await self.transport.stop()
 
-    @unittest_run_loop
     async def test_send_message_outliers(self):
         await self.transport.start()
 
@@ -123,13 +120,15 @@ class TestHttpTransport(AioHTTPTestCase):
             mock_session.return_value = async_mock.MagicMock(
                 receive=async_mock.CoroutineMock(
                     return_value=async_mock.MagicMock(
-                        receipt=async_mock.MagicMock(direct_response_requested=True)
+                        receipt=async_mock.MagicMock(direct_response_requested=True),
+                        wait_processing_complete=async_mock.CoroutineMock(),
                     )
                 ),
                 can_respond=True,
                 profile=InMemoryProfile.test_profile(),
                 clear_response=async_mock.MagicMock(),
                 wait_response=async_mock.CoroutineMock(return_value=b"Hello world"),
+                response_buffer="something",
             )
             async with self.client.post("/", data=test_message) as resp:
                 result = await resp.text()
@@ -149,7 +148,6 @@ class TestHttpTransport(AioHTTPTestCase):
 
         await self.transport.stop()
 
-    @unittest_run_loop
     async def test_invite_message_handler(self):
         await self.transport.start()
 

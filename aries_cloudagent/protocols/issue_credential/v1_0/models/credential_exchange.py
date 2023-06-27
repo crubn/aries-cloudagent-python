@@ -2,7 +2,7 @@
 
 import logging
 
-from typing import Any, Mapping, Union
+from typing import Any, Mapping, Optional, Union
 
 from marshmallow import fields, validate
 
@@ -17,6 +17,9 @@ from .....storage.base import StorageError
 
 from ..messages.credential_proposal import CredentialProposal, CredentialProposalSchema
 from ..messages.credential_offer import CredentialOffer, CredentialOfferSchema
+from ..messages.credential_exchange_webhook import (
+    V10CredentialExchangeWebhook,
+)
 
 from . import UNENCRYPTED_TAGS
 
@@ -51,12 +54,13 @@ class V10CredentialExchange(BaseExchangeRecord):
     STATE_CREDENTIAL_RECEIVED = "credential_received"
     STATE_ACKED = "credential_acked"
     STATE_CREDENTIAL_REVOKED = "credential_revoked"
+    STATE_ABANDONED = "abandoned"
 
     def __init__(
         self,
         *,
         credential_exchange_id: str = None,
-        connection_id: str = None,
+        connection_id: Optional[str] = None,
         thread_id: str = None,
         parent_thread_id: str = None,
         initiator: str = None,
@@ -188,6 +192,7 @@ class V10CredentialExchange(BaseExchangeRecord):
         self,
         session: ProfileSession,
         *,
+        state: str = None,
         reason: str = None,
         log_params: Mapping[str, Any] = None,
         log_override: bool = False,
@@ -202,10 +207,10 @@ class V10CredentialExchange(BaseExchangeRecord):
             override: Override configured logging regimen, print to stderr instead
         """
 
-        if self._last_state is None:  # already done
+        if self._last_state == state:  # already done
             return
 
-        self.state = None
+        self.state = state or V10CredentialExchange.STATE_ABANDONED
         if reason:
             self.error_msg = reason
 
@@ -216,8 +221,35 @@ class V10CredentialExchange(BaseExchangeRecord):
                 log_params=log_params,
                 log_override=log_override,
             )
-        except StorageError as err:
-            LOGGER.exception(err)
+        except StorageError:
+            LOGGER.exception("Error saving credential exchange error state")
+
+    # Override
+    async def emit_event(self, session: ProfileSession, payload: Any = None):
+        """
+        Emit an event.
+
+        Args:
+            session: The profile session to use
+            payload: The event payload
+        """
+
+        if not self.RECORD_TOPIC:
+            return
+
+        if self.state:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}::{self.state}"
+        else:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}"
+
+        if session.profile.settings.get("debug.webhooks"):
+            if not payload:
+                payload = self.serialize()
+        else:
+            payload = V10CredentialExchangeWebhook(**self.__dict__)
+            payload = payload.__dict__
+
+        await session.profile.notify(topic, payload)
 
     @property
     def record_value(self) -> dict:
@@ -260,18 +292,30 @@ class V10CredentialExchange(BaseExchangeRecord):
 
     @classmethod
     async def retrieve_by_connection_and_thread(
-        cls, session: ProfileSession, connection_id: str, thread_id: str
+        cls,
+        session: ProfileSession,
+        connection_id: Optional[str],
+        thread_id: str,
+        role: Optional[str] = None,
+        *,
+        for_update=False,
     ) -> "V10CredentialExchange":
         """Retrieve a credential exchange record by connection and thread ID."""
-        cache_key = f"credential_exchange_ctidx::{connection_id}::{thread_id}"
+        cache_key = f"credential_exchange_ctidx::{connection_id}::{thread_id}::{role}"
         record_id = await cls.get_cached_key(session, cache_key)
         if record_id:
-            record = await cls.retrieve_by_id(session, record_id)
+            record = await cls.retrieve_by_id(session, record_id, for_update=for_update)
         else:
+            post_filter = {}
+            if role:
+                post_filter["role"] = role
+            if connection_id:
+                post_filter["connection_id"] = connection_id
             record = await cls.retrieve_by_tag_filter(
                 session,
                 {"thread_id": thread_id},
-                {"connection_id": connection_id} if connection_id else None,
+                post_filter,
+                for_update=for_update,
             )
             await cls.set_cached_key(session, cache_key, record.credential_exchange_id)
         return record

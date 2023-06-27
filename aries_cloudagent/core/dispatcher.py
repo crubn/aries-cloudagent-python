@@ -10,17 +10,19 @@ import logging
 import os
 import warnings
 
-from typing import Callable, Coroutine, Union
+from typing import Callable, Coroutine, Optional, Union, Tuple
+import weakref
 
 from aiohttp.web import HTTPException
 
+from ..connections.models.conn_record import ConnRecord
 from ..core.profile import Profile
 from ..messaging.agent_message import AgentMessage
 from ..messaging.base_message import BaseMessage
 from ..messaging.error import MessageParseError
 from ..messaging.models.base import BaseModelError
 from ..messaging.request_context import RequestContext
-from ..messaging.responder import BaseResponder
+from ..messaging.responder import BaseResponder, SKIP_ACTIVE_CONN_CHECK_MSG_TYPES
 from ..messaging.util import datetime_now
 from ..protocols.connections.v1_0.manager import ConnectionManager
 from ..protocols.problem_report.v1_0.message import ProblemReport
@@ -33,6 +35,13 @@ from ..utils.tracing import get_timer, trace_event
 
 from .error import ProtocolMinorVersionNotSupported
 from .protocol_registry import ProtocolRegistry
+from .util import (
+    get_version_from_message_type,
+    validate_get_response_version,
+    # WARNING_DEGRADED_FEATURES,
+    # WARNING_VERSION_MISMATCH,
+    # WARNING_VERSION_NOT_SUPPORTED,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -130,6 +139,9 @@ class Dispatcher:
             inbound_message: The inbound message instance
             send_outbound: Async function to send outbound messages
 
+        # Raises:
+        #     MessageParseError: If the message type version is not supported
+
         Returns:
             The response from the handler
 
@@ -137,9 +149,12 @@ class Dispatcher:
         r_time = get_timer()
 
         error_result = None
+        version_warning = None
         message = None
         try:
-            message = await self.make_message(inbound_message.payload)
+            (message, warning) = await self.make_message(
+                profile, inbound_message.payload
+            )
         except ProblemReportParseError:
             pass  # avoid problem report recursion
         except MessageParseError as e:
@@ -152,6 +167,47 @@ class Dispatcher:
             )
             if inbound_message.receipt.thread_id:
                 error_result.assign_thread_id(inbound_message.receipt.thread_id)
+        # if warning:
+        #     warning_message_type = inbound_message.payload.get("@type")
+        #     if warning == WARNING_DEGRADED_FEATURES:
+        #         LOGGER.error(
+        #             f"Sending {WARNING_DEGRADED_FEATURES} problem report, "
+        #             "message type received with a minor version at or higher"
+        #             " than protocol minimum supported and current minor version "
+        #             f"for message_type {warning_message_type}"
+        #         )
+        #         version_warning = ProblemReport(
+        #             description={
+        #                 "en": (
+        #                     "message type received with a minor version at or "
+        #                     "higher than protocol minimum supported and current"
+        #                     f" minor version for message_type {warning_message_type}"
+        #                 ),
+        #                 "code": WARNING_DEGRADED_FEATURES,
+        #             }
+        #         )
+        #     elif warning == WARNING_VERSION_MISMATCH:
+        #         LOGGER.error(
+        #             f"Sending {WARNING_VERSION_MISMATCH} problem report, message "
+        #             "type received with a minor version higher than current minor "
+        #             f"version for message_type {warning_message_type}"
+        #         )
+        #         version_warning = ProblemReport(
+        #             description={
+        #                 "en": (
+        #                     "message type received with a minor version higher"
+        #                     " than current minor version for message_type"
+        #                     f" {warning_message_type}"
+        #                 ),
+        #                 "code": WARNING_VERSION_MISMATCH,
+        #             }
+        #         )
+        #     elif warning == WARNING_VERSION_NOT_SUPPORTED:
+        #         raise MessageParseError(
+        #             f"Message type version not supported for {warning_message_type}"
+        #         )
+        #     if version_warning and inbound_message.receipt.thread_id:
+        #         version_warning.assign_thread_id(inbound_message.receipt.thread_id)
 
         trace_event(
             self.profile.settings,
@@ -173,11 +229,20 @@ class Dispatcher:
 
         context.injector.bind_instance(BaseResponder, responder)
 
-        connection_mgr = ConnectionManager(profile)
-        connection = await connection_mgr.find_inbound_connection(
-            inbound_message.receipt
-        )
-        del connection_mgr
+        # When processing oob attach message we supply the connection id
+        # associated with the inbound message
+        if inbound_message.connection_id:
+            async with self.profile.session() as session:
+                connection = await ConnRecord.retrieve_by_id(
+                    session, inbound_message.connection_id
+                )
+        else:
+            connection_mgr = ConnectionManager(profile)
+            connection = await connection_mgr.find_inbound_connection(
+                inbound_message.receipt
+            )
+            del connection_mgr
+
         if connection:
             inbound_message.connection_id = connection.connection_id
 
@@ -187,6 +252,8 @@ class Dispatcher:
 
         if error_result:
             await responder.send_reply(error_result)
+        elif version_warning:
+            await responder.send_reply(version_warning)
         elif context.message:
             context.injector.bind_instance(BaseResponder, responder)
 
@@ -203,7 +270,9 @@ class Dispatcher:
             perf_counter=r_time,
         )
 
-    async def make_message(self, parsed_msg: dict) -> BaseMessage:
+    async def make_message(
+        self, profile: Profile, parsed_msg: dict
+    ) -> Tuple[BaseMessage, Optional[str]]:
         """
         Deserialize a message dict into the appropriate message instance.
 
@@ -212,6 +281,7 @@ class Dispatcher:
 
         Args:
             parsed_msg: The parsed message
+            profile: Profile
 
         Returns:
             An instance of the corresponding message class for this message
@@ -228,6 +298,7 @@ class Dispatcher:
 
         if not message_type:
             raise MessageParseError("Message does not contain '@type' parameter")
+        message_type_rec_version = get_version_from_message_type(message_type)
 
         registry: ProtocolRegistry = self.profile.inject(ProtocolRegistry)
         try:
@@ -244,8 +315,10 @@ class Dispatcher:
             if "/problem-report" in message_type:
                 raise ProblemReportParseError("Error parsing problem report message")
             raise MessageParseError(f"Error deserializing message: {e}") from e
-
-        return instance
+        _, warning = await validate_get_response_version(
+            profile, message_type_rec_version, message_cls
+        )
+        return (instance, warning)
 
     async def complete(self, timeout: float = 0.1):
         """Wait for pending tasks to complete."""
@@ -272,7 +345,10 @@ class DispatcherResponder(BaseResponder):
 
         """
         super().__init__(**kwargs)
-        self._context = context
+        # Weakly hold the context so it can be properly garbage collected.
+        # Binding this DispatcherResponder into the context creates a circular
+        # reference.
+        self._context = weakref.ref(context)
         self._inbound_message = inbound_message
         self._send = send_outbound
 
@@ -285,13 +361,13 @@ class DispatcherResponder(BaseResponder):
         Args:
             message: The message payload
         """
-        if isinstance(message, AgentMessage) and self._context.settings.get(
-            "timing.enabled"
-        ):
+        context = self._context()
+        if not context:
+            raise RuntimeError("weakref to context has expired")
+
+        if isinstance(message, AgentMessage) and context.settings.get("timing.enabled"):
             # Inject the timing decorator
-            in_time = (
-                self._context.message_receipt and self._context.message_receipt.in_time
-            )
+            in_time = context.message_receipt and context.message_receipt.in_time
             if not message._decorators.get("timing"):
                 message._decorators["timing"] = {
                     "in_time": in_time,
@@ -300,14 +376,37 @@ class DispatcherResponder(BaseResponder):
 
         return await super().create_outbound(message, **kwargs)
 
-    async def send_outbound(self, message: OutboundMessage) -> OutboundSendStatus:
+    async def send_outbound(
+        self, message: OutboundMessage, **kwargs
+    ) -> OutboundSendStatus:
         """
         Send outbound message.
 
         Args:
             message: The `OutboundMessage` to be sent
         """
-        return await self._send(self._context.profile, message, self._inbound_message)
+        context = self._context()
+        if not context:
+            raise RuntimeError("weakref to context has expired")
+
+        msg_type = kwargs.get("message_type")
+        msg_id = kwargs.get("message_id")
+
+        if (
+            message.connection_id
+            and msg_type
+            and msg_type not in SKIP_ACTIVE_CONN_CHECK_MSG_TYPES
+            and not await super().conn_rec_active_state_check(
+                profile=context.profile,
+                connection_id=message.connection_id,
+            )
+        ):
+            raise RuntimeError(
+                f"Connection {message.connection_id} is not ready"
+                " which is required for sending outbound"
+                f" message {msg_id} of type {msg_type}."
+            )
+        return await self._send(context.profile, message, self._inbound_message)
 
     async def send_webhook(self, topic: str, payload: dict):
         """
@@ -321,4 +420,8 @@ class DispatcherResponder(BaseResponder):
             "responder.send_webhook is deprecated; please use the event bus instead.",
             DeprecationWarning,
         )
-        await self._context.profile.notify("acapy::webhook::" + topic, payload)
+        context = self._context()
+        if not context:
+            raise RuntimeError("weakref to context has expired")
+
+        await context.profile.notify("acapy::webhook::" + topic, payload)

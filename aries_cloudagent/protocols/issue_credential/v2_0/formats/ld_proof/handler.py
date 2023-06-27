@@ -1,10 +1,11 @@
 """V2.0 issue-credential linked data proof credential format handler."""
 
+
 from ......vc.ld_proofs.error import LinkedDataProofException
 from ......vc.ld_proofs.check import get_properties_without_context
 import logging
 
-from typing import Mapping
+from typing import Mapping, Optional
 
 from marshmallow import EXCLUDE, INCLUDE
 
@@ -35,7 +36,7 @@ from ......vc.ld_proofs import (
 from ......vc.ld_proofs.constants import SECURITY_CONTEXT_BBS_URL
 from ......wallet.base import BaseWallet, DIDInfo
 from ......wallet.error import WalletNotFoundError
-from ......wallet.key_type import KeyType
+from ......wallet.key_type import BLS12381G2, ED25519
 
 from ...message_types import (
     ATTACHMENT_FORMAT,
@@ -64,19 +65,19 @@ SUPPORTED_ISSUANCE_PROOF_PURPOSES = {
     AuthenticationProofPurpose.term,
 }
 SUPPORTED_ISSUANCE_SUITES = {Ed25519Signature2018}
-SIGNATURE_SUITE_KEY_TYPE_MAPPING = {Ed25519Signature2018: KeyType.ED25519}
+SIGNATURE_SUITE_KEY_TYPE_MAPPING = {Ed25519Signature2018: ED25519}
 
 
 # We only want to add bbs suites to supported if the module is installed
 if BbsBlsSignature2020.BBS_SUPPORTED:
     SUPPORTED_ISSUANCE_SUITES.add(BbsBlsSignature2020)
-    SIGNATURE_SUITE_KEY_TYPE_MAPPING[BbsBlsSignature2020] = KeyType.BLS12381G2
+    SIGNATURE_SUITE_KEY_TYPE_MAPPING[BbsBlsSignature2020] = BLS12381G2
 
 
 PROOF_TYPE_SIGNATURE_SUITE_MAPPING = {
-    suite.signature_type: suite
-    for suite, key_type in SIGNATURE_SUITE_KEY_TYPE_MAPPING.items()
+    suite.signature_type: suite for suite in SIGNATURE_SUITE_KEY_TYPE_MAPPING
 }
+
 
 KEY_TYPE_SIGNATURE_SUITE_MAPPING = {
     key_type: suite for suite, key_type in SIGNATURE_SUITE_KEY_TYPE_MAPPING.items()
@@ -128,14 +129,14 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
                 session, cred_ex_id
             )
 
-            if len(records) > 1:
-                LOGGER.warning(
-                    "Cred ex id %s has %d %s detail records: should be 1",
-                    cred_ex_id,
-                    len(records),
-                    LDProofCredFormatHandler.format.api,
-                )
-            return records[0] if records else None
+        if len(records) > 1:
+            LOGGER.warning(
+                "Cred ex id %s has %d %s detail records: should be 1",
+                cred_ex_id,
+                len(records),
+                LDProofCredFormatHandler.format.api,
+            )
+        return records[0] if records else None
 
     def get_format_identifier(self, message_type: str) -> str:
         """Get attachment format identifier for format and message combination.
@@ -252,7 +253,9 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
             # All other methods we can just query
             return await wallet.get_local_did(did)
 
-    async def _get_suite_for_detail(self, detail: LDProofVCDetail) -> LinkedDataProof:
+    async def _get_suite_for_detail(
+        self, detail: LDProofVCDetail, verification_method: Optional[str] = None
+    ) -> LinkedDataProof:
         issuer_id = detail.credential.issuer_id
         proof_type = detail.options.proof_type
 
@@ -267,7 +270,9 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
         )
 
         did_info = await self._did_info_for_did(issuer_id)
-        verification_method = self._get_verification_method(issuer_id)
+        verification_method = verification_method or self._get_verification_method(
+            issuer_id
+        )
 
         suite = await self._get_suite(
             proof_type=proof_type,
@@ -456,7 +461,9 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
         """Receive linked data proof request."""
 
     async def issue_credential(
-        self, cred_ex_record: V20CredExRecord, retries: int = 5
+        self,
+        cred_ex_record: V20CredExRecord,
+        retries: int = 5,
     ) -> CredFormatAttachment:
         """Issue linked data proof credential."""
         if not cred_ex_record.cred_request:
@@ -471,7 +478,9 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
         detail = await self._prepare_detail(detail)
 
         # Get signature suite, proof purpose and document loader
-        suite = await self._get_suite_for_detail(detail)
+        suite = await self._get_suite_for_detail(
+            detail, cred_ex_record.verification_method
+        )
         proof_purpose = self._get_proof_purpose(
             proof_purpose=detail.options.proof_purpose,
             challenge=detail.options.challenge,
@@ -503,7 +512,7 @@ class LDProofCredFormatHandler(V20CredFormatHandler):
 
         # Remove values from cred that are not part of detail
         cred_dict.pop("proof")
-        credential_status = cred_dict.pop("credentialStatus", None)
+        credential_status = cred_dict.get("credentialStatus", None)
         detail_status = detail.options.credential_status
 
         if cred_dict != detail_dict["credential"]:

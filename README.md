@@ -1,7 +1,6 @@
 # Hyperledger Aries Cloud Agent - Python  <!-- omit in toc -->
 
 [![pypi releases](https://img.shields.io/pypi/v/aries_cloudagent)](https://pypi.org/project/aries-cloudagent/)
-[![CircleCI](https://circleci.com/gh/hyperledger/aries-cloudagent-python.svg?style=shield)](https://circleci.com/gh/hyperledger/aries-cloudagent-python)
 [![codecov](https://codecov.io/gh/hyperledger/aries-cloudagent-python/branch/main/graph/badge.svg)](https://codecov.io/gh/hyperledger/aries-cloudagent-python)
 
 <!-- ![logo](/doc/assets/aries-cloudagent-python-logo-bw.png) -->
@@ -66,6 +65,8 @@ There is an [architectural deep dive webinar](https://www.youtube.com/watch?v=FX
 
 ![drawing](./aca-py_architecture.png)
 
+You can extend Aca-Py using plug-ins, which can be loaded at runtime.  Plug-ins are mentioned in the [webinar](https://docs.google.com/presentation/d/1K7qiQkVi4n-lpJ3nUZY27OniUEM0c8HAIk4imCWCx5Q/edit#slide=id.g5d43fe05cc_0_145) and are [described in more detail here](/docs/GettingStartedAriesDev/PlugIns.md).
+
 ### Installation and Usage
 
 An ["install and go" page for developers](https://github.com/hyperledger/aries-cloudagent-python/blob/main/DevReadMe.md) is available if you are comfortable with Trust over IP and Aries concepts. ACA-Py can be run with Docker without installation (highly recommended), or can be installed [from PyPi](https://pypi.org/project/aries-cloudagent/). In the [/demo directory](/demo) there is a full set of demos for developers to use in getting started, and the [demo read me](/demo/README.md) is a great starting point for developers to use an "in-browser" approach to run a zero-install example. The [Read the Docs](https://aries-cloud-agent-python.readthedocs.io/en/latest/) overview is also a way to reference the modules and APIs that make up an ACA-Py instance.
@@ -77,6 +78,19 @@ The [overview of ACA-Py’s API](https://github.com/hyperledger/aries-cloudagent
 An ACA-Py instance puts together an OpenAPI-documented REST interface based on the protocols that are loaded. This is used by a controller application (written in any language) to manage the behaviour of the agent. The controller can initiate actions (e.g. issuing a credential) and can respond to agent events (e.g. sending a presentation request after a connection is accepted). Agent events are delivered to the controller as webhooks to a configured URL.
 
 Technical note: the administrative API exposed by the agent for the controller to use must be protected with an API key (using the --admin-api-key command line arg) or deliberately left unsecured using the --admin-insecure-mode command line arg. The latter should not be used other than in development if the API is not otherwise secured.
+
+## Troubleshooting
+
+There are a number of resources for getting help with ACA-Py and troubleshooting
+any problems you might run into. The [Troubleshooting](Troubleshooting.md)
+document contains some guidance about issues that have been experienced in the
+past. Feel free to submit PRs to supplement the troubleshooting document!
+Searching the [ACA-Py GitHub
+issues](https://github.com/hyperledger/aries-cloudagent-python/issues) will
+often uncover challenges that others have experienced, often with answers to
+solving those challenges. As well, there is the "aries-cloudagent-python"
+channel on the Hyperledger Discord chat server ([invitation
+here](https://discord.gg/hyperledger)).
 
 ## Credit
 

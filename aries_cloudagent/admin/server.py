@@ -4,9 +4,10 @@ import asyncio
 from hmac import compare_digest
 import logging
 import re
-from typing import Callable, Coroutine
+from typing import Callable, Coroutine, Optional, Pattern, Sequence, cast
 import uuid
 import warnings
+import weakref
 
 from aiohttp import web
 from aiohttp_apispec import (
@@ -52,6 +53,7 @@ EVENT_WEBHOOK_MAPPING = {
     "acapy::actionmenu::received": "actionmenu",
     "acapy::actionmenu::get-active-menu": "get-active-menu",
     "acapy::actionmenu::perform-menu-action": "perform-menu-action",
+    "acapy::keylist::updated": "keylist",
 }
 
 
@@ -115,17 +117,26 @@ class AdminResponder(BaseResponder):
 
         """
         super().__init__(**kwargs)
-        self._profile = profile
+        # Weakly hold the profile so this reference doesn't prevent profiles
+        # from being cleaned up when appropriate.
+        # Binding this AdminResponder to the profile's context creates a circular
+        # reference.
+        self._profile = weakref.ref(profile)
         self._send = send
 
-    async def send_outbound(self, message: OutboundMessage) -> OutboundSendStatus:
+    async def send_outbound(
+        self, message: OutboundMessage, **kwargs
+    ) -> OutboundSendStatus:
         """
         Send outbound message.
 
         Args:
             message: The `OutboundMessage` to be sent
         """
-        return await self._send(self._profile, message)
+        profile = self._profile()
+        if not profile:
+            raise RuntimeError("weakref to profile has expired")
+        return await self._send(profile, message)
 
     async def send_webhook(self, topic: str, payload: dict):
         """
@@ -139,7 +150,10 @@ class AdminResponder(BaseResponder):
             "responder.send_webhook is deprecated; please use the event bus instead.",
             DeprecationWarning,
         )
-        await self._profile.notify("acapy::webhook::" + topic, payload)
+        profile = self._profile()
+        if not profile:
+            raise RuntimeError("weakref to profile has expired")
+        await profile.notify("acapy::webhook::" + topic, payload)
 
     @property
     def send_fn(self) -> Coroutine:
@@ -151,14 +165,10 @@ class AdminResponder(BaseResponder):
 async def ready_middleware(request: web.BaseRequest, handler: Coroutine):
     """Only continue if application is ready to take work."""
 
-    if (
-        str(request.rel_url).rstrip("/")
-        in (
-            "/status/live",
-            "/status/ready",
-        )
-        or request.app._state.get("ready")
-    ):
+    if str(request.rel_url).rstrip("/") in (
+        "/status/live",
+        "/status/ready",
+    ) or request.app._state.get("ready"):
         try:
             return await handler(request)
         except (LedgerConfigError, LedgerTransactionError) as e:
@@ -253,8 +263,31 @@ class AdminServer(BaseAdminServer):
         self.websocket_queues = {}
         self.site = None
         self.multitenant_manager = context.inject_or(BaseMultitenantManager)
+        self._additional_route_pattern: Optional[Pattern] = None
 
         self.server_paths = []
+
+    @property
+    def additional_routes_pattern(self) -> Optional[Pattern]:
+        """Pattern for configured addtional routes to permit base wallet to access."""
+        if self._additional_route_pattern:
+            return self._additional_route_pattern
+
+        base_wallet_routes = self.context.settings.get("multitenant.base_wallet_routes")
+        base_wallet_routes = cast(Sequence[str], base_wallet_routes)
+        if base_wallet_routes:
+            self._additional_route_pattern = re.compile(
+                "^(?:" + "|".join(base_wallet_routes) + ")"
+            )
+        return None
+
+    def _matches_additional_routes(self, path: str) -> bool:
+        """Path matches additional_routes_pattern."""
+        pattern = self.additional_routes_pattern
+        if pattern:
+            return bool(pattern.match(path))
+
+        return False
 
     async def make_application(self) -> web.Application:
         """Get the aiohttp application instance."""
@@ -267,18 +300,14 @@ class AdminServer(BaseAdminServer):
         assert self.admin_insecure_mode ^ bool(self.admin_api_key)
 
         def is_unprotected_path(path: str):
-            return (
-                path
-                in [
-                    "/api/doc",
-                    "/api/docs/swagger.json",
-                    "/favicon.ico",
-                    "/ws",  # ws handler checks authentication
-                    "/status/live",
-                    "/status/ready",
-                ]
-                or path.startswith("/static/swagger/")
-            )
+            return path in [
+                "/api/doc",
+                "/api/docs/swagger.json",
+                "/favicon.ico",
+                "/ws",  # ws handler checks authentication
+                "/status/live",
+                "/status/ready",
+            ] or path.startswith("/static/swagger/")
 
         # If admin_api_key is None, then admin_insecure_mode must be set so
         # we can safely enable the admin server with no security
@@ -331,6 +360,8 @@ class AdminServer(BaseAdminServer):
                         f"{UUIDFour.PATTERN}/default-mediator)",
                         path,
                     )
+                    or path.startswith("/mediation/default-mediator")
+                    or self._matches_additional_routes(path)
                 )
 
                 # base wallet is not allowed to perform ssi related actions.
@@ -341,6 +372,7 @@ class AdminServer(BaseAdminServer):
                     and not is_server_path
                     and not is_unprotected_path(path)
                     and not base_limited_access_path
+                    and not (request.method == "OPTIONS")  # CORS fix
                 ):
                     raise web.HTTPUnauthorized()
 
@@ -403,7 +435,7 @@ class AdminServer(BaseAdminServer):
         )
 
         server_routes = [
-            web.get("/", self.redirect_handler, allow_head=False),
+            web.get("/", self.redirect_handler, allow_head=True),
             web.get("/plugins", self.plugins_handler, allow_head=False),
             web.get("/status", self.status_handler, allow_head=False),
             web.get("/status/config", self.config_handler, allow_head=False),
@@ -461,7 +493,7 @@ class AdminServer(BaseAdminServer):
 
         def sort_dict(raw: dict) -> dict:
             """Order (JSON, string keys) dict asciibetically by key, recursively."""
-            for (k, v) in raw.items():
+            for k, v in raw.items():
                 if isinstance(v, dict):
                     raw[k] = sort_dict(v)
             return dict(sorted([item for item in raw.items()], key=lambda x: x[0]))

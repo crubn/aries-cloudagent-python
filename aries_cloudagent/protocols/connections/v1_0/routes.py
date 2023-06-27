@@ -10,11 +10,12 @@ from aiohttp_apispec import (
     request_schema,
     response_schema,
 )
-
+from typing import cast
 from marshmallow import fields, validate, validates_schema
 
 from ....admin.request_context import AdminRequestContext
 from ....connections.models.conn_record import ConnRecord, ConnRecordSchema
+from ....cache.base import BaseCache
 from ....messaging.models.base import BaseModelError
 from ....messaging.models.openapi import OpenAPISchema
 from ....messaging.valid import (
@@ -115,7 +116,7 @@ class CreateInvitationRequestSchema(OpenAPISchema):
     mediation_id = fields.Str(
         required=False,
         description="Identifier for active mediation record to be used",
-        **MEDIATION_ID_SCHEMA
+        **MEDIATION_ID_SCHEMA,
     )
 
 
@@ -186,6 +187,9 @@ class ConnectionsListQueryStringSchema(OpenAPISchema):
         ),
     )
     their_did = fields.Str(description="Their DID", required=False, **INDY_DID)
+    their_public_did = fields.Str(
+        description="Their Public DID", required=False, **INDY_DID
+    )
     their_role = fields.Str(
         description="Their role in the connection protocol",
         required=False,
@@ -201,6 +205,11 @@ class ConnectionsListQueryStringSchema(OpenAPISchema):
             [proto.aries_protocol for proto in ConnRecord.Protocol]
         ),
         example=ConnRecord.Protocol.RFC_0160.aries_protocol,
+    )
+    invitation_msg_id = fields.UUID(
+        description="Identifier of the associated Invitation Mesage",
+        required=False,
+        example=UUIDFour.EXAMPLE,
     )
 
 
@@ -239,7 +248,7 @@ class ReceiveInvitationQueryStringSchema(OpenAPISchema):
     mediation_id = fields.Str(
         required=False,
         description="Identifier for active mediation record to be used",
-        **MEDIATION_ID_SCHEMA
+        **MEDIATION_ID_SCHEMA,
     )
 
 
@@ -253,7 +262,7 @@ class AcceptInvitationQueryStringSchema(OpenAPISchema):
     mediation_id = fields.Str(
         required=False,
         description="Identifier for active mediation record to be used",
-        **MEDIATION_ID_SCHEMA
+        **MEDIATION_ID_SCHEMA,
     )
 
 
@@ -332,6 +341,8 @@ async def connections_list(request: web.BaseRequest):
         "their_did",
         "request_id",
         "invitation_key",
+        "their_public_did",
+        "invitation_msg_id",
     ):
         if param_name in request.query and request.query[param_name] != "":
             tag_filter[param_name] = request.query[param_name]
@@ -526,11 +537,16 @@ async def connections_create_invitation(request: web.BaseRequest):
             metadata=metadata,
             mediation_id=mediation_id,
         )
-
+        invitation_url = invitation.to_url(base_url)
+        base_endpoint = service_endpoint or cast(
+            str, profile.settings.get("default_endpoint")
+        )
         result = {
             "connection_id": connection and connection.connection_id,
             "invitation": invitation.serialize(),
-            "invitation_url": invitation.to_url(base_url),
+            "invitation_url": f"{base_endpoint}{invitation_url}"
+            if invitation_url.startswith("?")
+            else invitation_url,
         }
     except (ConnectionManagerError, StorageError, BaseModelError) as err:
         raise web.HTTPBadRequest(reason=err.roll_up) from err
@@ -724,6 +740,9 @@ async def connections_remove(request: web.BaseRequest):
         async with profile.session() as session:
             connection = await ConnRecord.retrieve_by_id(session, connection_id)
             await connection.delete_record(session)
+            cache = session.inject_or(BaseCache)
+            if cache:
+                await cache.clear(f"conn_rec_state::{connection_id}")
     except StorageNotFoundError as err:
         raise web.HTTPNotFound(reason=err.roll_up) from err
     except StorageError as err:

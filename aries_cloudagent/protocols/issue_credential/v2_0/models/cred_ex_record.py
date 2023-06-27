@@ -2,7 +2,7 @@
 
 import logging
 
-from typing import Any, Mapping, Union
+from typing import Any, Mapping, Optional, Union
 
 from marshmallow import fields, Schema, validate
 
@@ -17,6 +17,7 @@ from ..messages.cred_proposal import V20CredProposal, V20CredProposalSchema
 from ..messages.cred_offer import V20CredOffer, V20CredOfferSchema
 from ..messages.cred_request import V20CredRequest, V20CredRequestSchema
 from ..messages.inner.cred_preview import V20CredPreviewSchema
+from ..messages.cred_ex_record_webhook import V20CredExRecordWebhook
 
 from . import UNENCRYPTED_TAGS
 
@@ -51,12 +52,14 @@ class V20CredExRecord(BaseExchangeRecord):
     STATE_CREDENTIAL_RECEIVED = "credential-received"
     STATE_DONE = "done"
     STATE_CREDENTIAL_REVOKED = "credential-revoked"
+    STATE_ABANDONED = "abandoned"
 
     def __init__(
         self,
         *,
         cred_ex_id: str = None,
         connection_id: str = None,
+        verification_method: Optional[str] = None,
         thread_id: str = None,
         parent_thread_id: str = None,
         initiator: str = None,
@@ -80,6 +83,7 @@ class V20CredExRecord(BaseExchangeRecord):
         super().__init__(cred_ex_id, state, trace=trace, **kwargs)
         self._id = cred_ex_id
         self.connection_id = connection_id or conn_id
+        self.verification_method = verification_method
         self.thread_id = thread_id
         self.parent_thread_id = parent_thread_id
         self.initiator = initiator
@@ -148,6 +152,7 @@ class V20CredExRecord(BaseExchangeRecord):
         self,
         session: ProfileSession,
         *,
+        state: str = None,
         reason: str = None,
         log_params: Mapping[str, Any] = None,
         log_override: bool = False,
@@ -162,10 +167,10 @@ class V20CredExRecord(BaseExchangeRecord):
             override: Override configured logging regimen, print to stderr instead
         """
 
-        if self._last_state is None:  # already done
+        if self._last_state == state:  # already done
             return
 
-        self.state = None
+        self.state = state or V20CredExRecord.STATE_ABANDONED
         if reason:
             self.error_msg = reason
 
@@ -179,6 +184,33 @@ class V20CredExRecord(BaseExchangeRecord):
         except StorageError as err:
             LOGGER.exception(err)
 
+    # Override
+    async def emit_event(self, session: ProfileSession, payload: Any = None):
+        """
+        Emit an event.
+
+        Args:
+            session: The profile session to use
+            payload: The event payload
+        """
+
+        if not self.RECORD_TOPIC:
+            return
+
+        if self.state:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}::{self.state}"
+        else:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}"
+
+        if session.profile.settings.get("debug.webhooks"):
+            if not payload:
+                payload = self.serialize()
+        else:
+            payload = V20CredExRecordWebhook(**self.__dict__)
+            payload = payload.__dict__
+
+        await session.profile.notify(topic, payload)
+
     @property
     def record_value(self) -> Mapping:
         """Accessor for the JSON record value generated for this credential exchange."""
@@ -187,6 +219,7 @@ class V20CredExRecord(BaseExchangeRecord):
                 prop: getattr(self, prop)
                 for prop in (
                     "connection_id",
+                    "verification_method",
                     "parent_thread_id",
                     "initiator",
                     "role",
@@ -212,7 +245,11 @@ class V20CredExRecord(BaseExchangeRecord):
 
     @classmethod
     async def retrieve_by_conn_and_thread(
-        cls, session: ProfileSession, connection_id: str, thread_id: str
+        cls,
+        session: ProfileSession,
+        connection_id: Optional[str],
+        thread_id: str,
+        role: Optional[str] = None,
     ) -> "V20CredExRecord":
         """Retrieve a credential exchange record by connection and thread ID."""
         cache_key = f"credential_exchange_ctidx::{connection_id}::{thread_id}"
@@ -220,10 +257,15 @@ class V20CredExRecord(BaseExchangeRecord):
         if record_id:
             record = await cls.retrieve_by_id(session, record_id)
         else:
+            post_filter = {}
+            if role:
+                post_filter["role"] = role
+            if connection_id:
+                post_filter["connection_id"] = connection_id
             record = await cls.retrieve_by_tag_filter(
                 session,
                 {"thread_id": thread_id},
-                {"connection_id": connection_id} if connection_id else None,
+                post_filter,
             )
             await cls.set_cached_key(session, cache_key, record.cred_ex_id)
         return record
@@ -285,11 +327,7 @@ class V20CredExRecordSchema(BaseExchangeSchema):
         description="Issue-credential exchange initiator: self or external",
         example=V20CredExRecord.INITIATOR_SELF,
         validate=validate.OneOf(
-            [
-                getattr(V20CredExRecord, m)
-                for m in vars(V20CredExRecord)
-                if m.startswith("INITIATOR_")
-            ]
+            V20CredExRecord.get_attributes_by_prefix("INITIATOR_", walk_mro=False)
         ),
     )
     role = fields.Str(
@@ -297,11 +335,7 @@ class V20CredExRecordSchema(BaseExchangeSchema):
         description="Issue-credential exchange role: holder or issuer",
         example=V20CredExRecord.ROLE_ISSUER,
         validate=validate.OneOf(
-            [
-                getattr(V20CredExRecord, m)
-                for m in vars(V20CredExRecord)
-                if m.startswith("ROLE_")
-            ]
+            V20CredExRecord.get_attributes_by_prefix("ROLE_", walk_mro=False)
         ),
     )
     state = fields.Str(
@@ -309,11 +343,7 @@ class V20CredExRecordSchema(BaseExchangeSchema):
         description="Issue-credential exchange state",
         example=V20CredExRecord.STATE_DONE,
         validate=validate.OneOf(
-            [
-                getattr(V20CredExRecord, m)
-                for m in vars(V20CredExRecord)
-                if m.startswith("STATE_")
-            ]
+            V20CredExRecord.get_attributes_by_prefix("STATE_", walk_mro=True)
         ),
     )
     cred_preview = fields.Nested(

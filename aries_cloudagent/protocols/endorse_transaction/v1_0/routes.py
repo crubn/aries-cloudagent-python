@@ -60,6 +60,15 @@ class TranIdMatchInfoSchema(OpenAPISchema):
     )
 
 
+class EndorserDIDInfoSchema(OpenAPISchema):
+    """Path parameters and validators for request Endorser DID."""
+
+    endorser_did = fields.Str(
+        description="Endorser DID",
+        required=False,
+    )
+
+
 class AssignTransactionJobsSchema(OpenAPISchema):
     """Assign transaction related jobs to connection record."""
 
@@ -289,6 +298,7 @@ async def transaction_create_request(request: web.BaseRequest):
     tags=["endorse-transaction"],
     summary="For Endorser to endorse a particular transaction record",
 )
+@querystring_schema(EndorserDIDInfoSchema())
 @match_info_schema(TranIdMatchInfoSchema())
 @response_schema(TransactionRecordSchema(), 200)
 async def endorse_transaction_response(request: web.BaseRequest):
@@ -305,6 +315,7 @@ async def endorse_transaction_response(request: web.BaseRequest):
     outbound_handler = request["outbound_message_router"]
 
     transaction_id = request.match_info["tran_id"]
+    endorser_did = request.query.get("endorser_did")
     try:
         async with context.profile.session() as session:
             transaction = await TransactionRecord.retrieve_by_id(
@@ -313,6 +324,7 @@ async def endorse_transaction_response(request: web.BaseRequest):
             connection_record = await ConnRecord.retrieve_by_id(
                 session, transaction.connection_id
             )
+            # provided DID is validated in the TransactionManager
 
     except StorageNotFoundError as err:
         raise web.HTTPNotFound(reason=err.roll_up) from err
@@ -341,6 +353,7 @@ async def endorse_transaction_response(request: web.BaseRequest):
         ) = await transaction_mgr.create_endorse_response(
             transaction=transaction,
             state=TransactionRecord.STATE_TRANSACTION_ENDORSED,
+            use_endorser_did=endorser_did,
         )
     except (IndyIssuerError, LedgerError) as err:
         raise web.HTTPBadRequest(reason=err.roll_up) from err
@@ -697,7 +710,7 @@ async def transaction_write(request: web.BaseRequest):
         (
             tx_completed,
             transaction_acknowledgement_message,
-        ) = await transaction_mgr.complete_transaction(transaction=transaction)
+        ) = await transaction_mgr.complete_transaction(transaction, False)
     except StorageError as err:
         raise web.HTTPBadRequest(reason=err.roll_up) from err
 
@@ -751,11 +764,15 @@ async def on_startup_event(profile: Profile, event: Event):
         invite = InvitationMessage.from_url(endorser_invitation)
         if invite:
             oob_mgr = OutOfBandManager(profile)
-            conn_record = await oob_mgr.receive_invitation(
+            oob_record = await oob_mgr.receive_invitation(
                 invitation=invite,
                 auto_accept=True,
                 alias=endorser_alias,
             )
+            async with profile.session() as session:
+                conn_record = await ConnRecord.retrieve_by_id(
+                    session, oob_record.connection_id
+                )
         else:
             invite = ConnectionInvitation.from_url(endorser_invitation)
             if invite:
@@ -787,11 +804,10 @@ async def on_startup_event(profile: Profile, event: Event):
                 value = {"endorser_did": endorser_did, "endorser_name": endorser_alias}
             await conn_record.metadata_set(session, key="endorser_info", value=value)
 
-    except Exception as e:
+    except Exception:
         # log the error, but continue
         LOGGER.exception(
             "Error accepting endorser invitation/configuring endorser connection: %s",
-            str(e),
         )
 
 

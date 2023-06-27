@@ -73,6 +73,11 @@ class BaseAgent(DemoAgent):
                 self.log("Connected")
                 self._connection_ready.set_result(True)
 
+    async def handle_issue_credential(self, payload):
+        cred_ex_id = payload["credential_exchange_id"]
+        self.credential_state[cred_ex_id] = payload["state"]
+        self.credential_event.set()
+
     async def handle_issue_credential_v2_0(self, payload):
         cred_ex_id = payload["cred_ex_id"]
         self.credential_state[cred_ex_id] = payload["state"]
@@ -103,7 +108,15 @@ class BaseAgent(DemoAgent):
             pending = 0
             total = len(self.credential_state)
             for result in self.credential_state.values():
-                if result != "done":
+                # Since cred_ex_record is set to be auto-removed
+                # the state in self.credential_state for completed
+                # exchanges will be deleted. Any problematic
+                # exchanges will be in abandoned state.
+                if (
+                    result != "done"
+                    and result != "deleted"
+                    and result != "credential_acked"
+                ):
                     pending += 1
             if self.credential_event.is_set():
                 continue
@@ -266,9 +279,10 @@ async def main(
     revocation: bool = False,
     tails_server_base_url: str = None,
     issue_count: int = 300,
+    batch_size: int = 30,
     wallet_type: str = None,
+    arg_file: str = None,
 ):
-
     if multi_ledger:
         genesis = None
         multi_ledger_config_path = "./demo/multi_ledger_config.yml"
@@ -295,6 +309,7 @@ async def main(
             multitenant=multitenant,
             mediation=mediation,
             wallet_type=wallet_type,
+            arg_file=arg_file,
         )
         await alice.listen_webhooks(start_port + 2)
 
@@ -307,6 +322,7 @@ async def main(
             multitenant=multitenant,
             mediation=mediation,
             wallet_type=wallet_type,
+            arg_file=arg_file,
         )
         await faber.listen_webhooks(start_port + 5)
         await faber.register_did()
@@ -371,8 +387,6 @@ async def main(
                 await alice_mediator_agent.reset_timing()
                 await faber_mediator_agent.reset_timing()
 
-        batch_size = 100
-
         semaphore = asyncio.Semaphore(threads)
 
         def done_propose(fut: asyncio.Task):
@@ -416,7 +430,7 @@ async def main(
                 pending, total = await agent.check_received_creds()
                 complete = total - pending
                 if reported == complete:
-                    await asyncio.wait_for(agent.update_creds(), 30)
+                    await asyncio.wait_for(agent.update_creds(), 45)
                     continue
                 if iter_pb and complete > reported:
                     try:
@@ -592,6 +606,13 @@ if __name__ == "__main__":
         help="Set the number of credentials to issue",
     )
     parser.add_argument(
+        "-b",
+        "--batch",
+        type=int,
+        default=100,
+        help="Set the batch size of credentials to issue",
+    )
+    parser.add_argument(
         "-p",
         "--port",
         type=int,
@@ -655,6 +676,12 @@ if __name__ == "__main__":
         metavar="<wallet-type>",
         help="Set the agent wallet type",
     )
+    parser.add_argument(
+        "--arg-file",
+        type=str,
+        metavar="<arg-file>",
+        help="Specify a file containing additional aca-py parameters",
+    )
     args = parser.parse_args()
 
     if args.did_exchange and args.mediation:
@@ -690,7 +717,9 @@ if __name__ == "__main__":
                 args.revocation,
                 tails_server_base_url,
                 args.count,
+                args.batch,
                 args.wallet_type,
+                args.arg_file,
             )
         )
     except KeyboardInterrupt:
