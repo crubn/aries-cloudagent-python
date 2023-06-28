@@ -337,7 +337,6 @@ class PresentationManager:
                     {"thread_id": thread_id},
                     {
                         "role": V10PresentationExchange.ROLE_VERIFIER,
-                        "connection_id": connection_id,
                     },
                 )
             )

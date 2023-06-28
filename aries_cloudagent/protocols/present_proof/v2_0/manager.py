@@ -338,7 +338,6 @@ class V20PresManager:
                 {"thread_id": thread_id},
                 {
                     "role": V20PresExRecord.ROLE_VERIFIER,
-                    "connection_id": connection_id,
                 },
             )
 
