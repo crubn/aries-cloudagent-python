@@ -1,3 +1,4 @@
+@RFC0586
 Feature: RFC 0586 Aries sign (endorse) transactions functions
 
    @T001-RFC0586
@@ -8,10 +9,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" requests endorsement for the transaction
       And "Acme" endorses the transaction
@@ -24,6 +25,8 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | --mediation               | --mediation               | driverslicense |
          | --multitenant             | --multitenant             | driverslicense |
          | --mediation --multitenant | --mediation --multitenant | driverslicense |
+         | --multitenant --multi-ledger | --multitenant --multi-ledger | driverslicense |
+         | --multitenant --multi-ledger --revocation | --multitenant --multi-ledger --revocation | driverslicense |
 
 
    @T001.1-RFC0586 @GHA
@@ -34,10 +37,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" requests endorsement for the transaction
       And "Acme" endorses the transaction
@@ -57,10 +60,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" requests endorsement for the transaction
       And "Acme" endorses the transaction
@@ -92,6 +95,7 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | --revocation --public-did --mediation               | --revocation --mediation                  | driverslicense | Data_DL_NormalizedValues |
          | --revocation --public-did --multitenant             | --revocation --multitenant                | driverslicense | Data_DL_NormalizedValues |
          | --revocation --public-did --mediation --multitenant | --revocation --mediation --multitenant    | driverslicense | Data_DL_NormalizedValues |
+         | --multitenant --multi-ledger --revocation --public-did | --multitenant --multi-ledger --revocation | driverslicense | Data_DL_NormalizedValues |
 
    @T002.1-RFC0586 @GHA
    Scenario Outline: endorse a schema and cred def transaction, write to the ledger, issue and revoke a credential, manually invoking each endorsement endpoint
@@ -101,10 +105,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" requests endorsement for the transaction
       And "Acme" endorses the transaction
@@ -142,10 +146,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" has written the schema <Schema_name> to the ledger
       And "Bob" authors a credential definition transaction with <Schema_name>
@@ -172,10 +176,10 @@ Feature: RFC 0586 Aries sign (endorse) transactions functions
          | Bob   | author   | <Bob_capabilities>  |
       And "Acme" and "Bob" have an existing connection
       When "Acme" has a DID with role "ENDORSER"
-      And "Bob" has a DID with role "AUTHOR"
       And "Acme" connection has job role "TRANSACTION_ENDORSER"
       And "Bob" connection has job role "TRANSACTION_AUTHOR"
       And "Bob" connection sets endorser info
+      And "Bob" has a DID with role "AUTHOR"
       And "Bob" authors a schema transaction with <Schema_name>
       And "Bob" has written the schema <Schema_name> to the ledger
       And "Bob" authors a credential definition transaction with <Schema_name>

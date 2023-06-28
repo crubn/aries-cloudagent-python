@@ -2,8 +2,10 @@
 
 import logging
 
-from typing import Mapping, Tuple
+from typing import Mapping, Optional, Tuple
 
+from ....connections.models.conn_record import ConnRecord
+from ....core.oob_processor import OobRecord
 from ....core.error import BaseError
 from ....core.profile import Profile
 from ....messaging.responder import BaseResponder
@@ -53,6 +55,7 @@ class V20CredManager:
         self,
         connection_id: str,
         cred_proposal: V20CredProposal,
+        verification_method: Optional[str] = None,
         auto_remove: bool = None,
     ) -> Tuple[V20CredExRecord, V20CredOffer]:
         """
@@ -61,6 +64,7 @@ class V20CredManager:
         Args:
             connection_id: connection for which to create offer
             cred_proposal: credential proposal with preview
+            verification_method: an optional verification method to be used when issuing
             auto_remove: flag to remove the record automatically on completion
 
         Returns:
@@ -71,6 +75,7 @@ class V20CredManager:
             auto_remove = not self._profile.settings.get("preserve_exchange_records")
         cred_ex_record = V20CredExRecord(
             connection_id=connection_id,
+            verification_method=verification_method,
             initiator=V20CredExRecord.INITIATOR_SELF,
             role=V20CredExRecord.ROLE_ISSUER,
             cred_proposal=cred_proposal,
@@ -78,12 +83,11 @@ class V20CredManager:
             auto_remove=auto_remove,
             trace=(cred_proposal._trace is not None),
         )
-        (cred_ex_record, cred_offer) = await self.create_offer(
+        return await self.create_offer(
             cred_ex_record=cred_ex_record,
             counter_proposal=None,
             comment="create automated v2.0 credential exchange record",
         )
-        return (cred_ex_record, cred_offer)
 
     async def create_proposal(
         self,
@@ -264,7 +268,7 @@ class V20CredManager:
     async def receive_offer(
         self,
         cred_offer_message: V20CredOffer,
-        connection_id: str,
+        connection_id: Optional[str],
     ) -> V20CredExRecord:
         """
         Receive a credential offer.
@@ -282,10 +286,11 @@ class V20CredManager:
         # or create it (issuer sent offer first)
         try:
             async with self._profile.session() as session:
-                cred_ex_record = await (
-                    V20CredExRecord.retrieve_by_conn_and_thread(
-                        session, connection_id, cred_offer_message._thread_id
-                    )
+                cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
+                    session,
+                    connection_id,
+                    cred_offer_message._thread_id,
+                    role=V20CredExRecord.ROLE_HOLDER,
                 )
         except StorageNotFoundError:  # issuer sent this offer free of any proposal
             cred_ex_record = V20CredExRecord(
@@ -376,7 +381,8 @@ class V20CredManager:
             requests_attach=[attach for (_, attach) in request_formats],
         )
 
-        cred_request_message._thread = {"thid": cred_ex_record.thread_id}
+        # Assign thid (and optionally pthid) to message
+        cred_request_message.assign_thread_from(cred_ex_record.cred_offer)
         cred_request_message.assign_trace_decorator(
             self._profile.settings, cred_ex_record.trace
         )
@@ -391,7 +397,10 @@ class V20CredManager:
         return (cred_ex_record, cred_request_message)
 
     async def receive_request(
-        self, cred_request_message: V20CredRequest, connection_id: str
+        self,
+        cred_request_message: V20CredRequest,
+        connection_record: Optional[ConnRecord],
+        oob_record: Optional[OobRecord],
     ) -> V20CredExRecord:
         """
         Receive a credential request.
@@ -404,46 +413,47 @@ class V20CredManager:
             credential exchange record, updated
 
         """
+        # connection_id is None in the record if this is in response to
+        # an request~attach from an OOB message. If so, we do not want to filter
+        # the record by connection_id.
+        connection_id = None if oob_record else connection_record.connection_id
+
         async with self._profile.session() as session:
             try:
-                cred_ex_record = await (
-                    V20CredExRecord.retrieve_by_conn_and_thread(
-                        session, connection_id, cred_request_message._thread_id
-                    )
+                cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
+                    session,
+                    connection_id,
+                    cred_request_message._thread_id,
+                    role=V20CredExRecord.ROLE_ISSUER,
                 )
             except StorageNotFoundError:
-                try:
-                    cred_ex_record = await V20CredExRecord.retrieve_by_tag_filter(
-                        session,
-                        {"thread_id": cred_request_message._thread_id},
-                        {"connection_id": None},
-                    )
-                    cred_ex_record.connection_id = connection_id
-                except StorageNotFoundError:
-                    # holder sent this request free of any offer
-                    cred_ex_record = V20CredExRecord(
-                        connection_id=connection_id,
-                        thread_id=cred_request_message._thread_id,
-                        initiator=V20CredExRecord.INITIATOR_EXTERNAL,
-                        role=V20CredExRecord.ROLE_ISSUER,
-                        auto_remove=not self._profile.settings.get(
-                            "preserve_exchange_records"
-                        ),
-                        trace=(cred_request_message._trace is not None),
-                        auto_issue=self._profile.settings.get(
-                            "debug.auto_respond_credential_request"
-                        ),
-                    )
+                # holder sent this request free of any offer
+                cred_ex_record = V20CredExRecord(
+                    connection_id=connection_id,
+                    thread_id=cred_request_message._thread_id,
+                    initiator=V20CredExRecord.INITIATOR_EXTERNAL,
+                    role=V20CredExRecord.ROLE_ISSUER,
+                    auto_remove=not self._profile.settings.get(
+                        "preserve_exchange_records"
+                    ),
+                    trace=(cred_request_message._trace is not None),
+                    auto_issue=self._profile.settings.get(
+                        "debug.auto_respond_credential_request"
+                    ),
+                )
 
-            for format in cred_request_message.formats:
-                cred_format = V20CredFormat.Format.get(format.format)
-                if cred_format:
-                    await cred_format.handler(self.profile).receive_request(
-                        cred_ex_record, cred_request_message
-                    )
+        if connection_record:
+            cred_ex_record.connection_id = connection_record.connection_id
 
-            cred_ex_record.cred_request = cred_request_message
-            cred_ex_record.state = V20CredExRecord.STATE_REQUEST_RECEIVED
+        for format in cred_request_message.formats:
+            cred_format = V20CredFormat.Format.get(format.format)
+            if cred_format:
+                await cred_format.handler(self.profile).receive_request(
+                    cred_ex_record, cred_request_message
+                )
+
+        cred_ex_record.cred_request = cred_request_message
+        cred_ex_record.state = V20CredExRecord.STATE_REQUEST_RECEIVED
 
         async with self._profile.session() as session:
             await cred_ex_record.save(session, reason="receive v2.0 credential request")
@@ -526,7 +536,7 @@ class V20CredManager:
         return (cred_ex_record, cred_issue_message)
 
     async def receive_credential(
-        self, cred_issue_message: V20CredIssue, connection_id: str
+        self, cred_issue_message: V20CredIssue, connection_id: Optional[str]
     ) -> V20CredExRecord:
         """
         Receive a credential issue message from an issuer.
@@ -541,45 +551,44 @@ class V20CredManager:
 
         # FIXME use transaction, fetch for_update
         async with self._profile.session() as session:
-            cred_ex_record = await (
-                V20CredExRecord.retrieve_by_conn_and_thread(
-                    session,
-                    connection_id,
-                    cred_issue_message._thread_id,
-                )
+            cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
+                session,
+                connection_id,
+                cred_issue_message._thread_id,
+                role=V20CredExRecord.ROLE_HOLDER,
             )
 
-            cred_request_message = cred_ex_record.cred_request
-            req_formats = [
-                V20CredFormat.Format.get(fmt.format)
-                for fmt in cred_request_message.formats
-                if V20CredFormat.Format.get(fmt.format)
-            ]
-            issue_formats = [
-                V20CredFormat.Format.get(fmt.format)
-                for fmt in cred_issue_message.formats
-                if V20CredFormat.Format.get(fmt.format)
-            ]
-            handled_formats = []
+        cred_request_message = cred_ex_record.cred_request
+        req_formats = [
+            V20CredFormat.Format.get(fmt.format)
+            for fmt in cred_request_message.formats
+            if V20CredFormat.Format.get(fmt.format)
+        ]
+        issue_formats = [
+            V20CredFormat.Format.get(fmt.format)
+            for fmt in cred_issue_message.formats
+            if V20CredFormat.Format.get(fmt.format)
+        ]
+        handled_formats = []
 
-            # check that we didn't receive any formats not present in the request
-            if set(issue_formats) - set(req_formats):
-                raise V20CredManagerError(
-                    "Received issue credential format(s) not present in credential "
-                    f"request: {set(issue_formats) - set(req_formats)}"
-                )
+        # check that we didn't receive any formats not present in the request
+        if set(issue_formats) - set(req_formats):
+            raise V20CredManagerError(
+                "Received issue credential format(s) not present in credential "
+                f"request: {set(issue_formats) - set(req_formats)}"
+            )
 
-            for issue_format in issue_formats:
-                await issue_format.handler(self.profile).receive_credential(
-                    cred_ex_record, cred_issue_message
-                )
-                handled_formats.append(issue_format)
+        for issue_format in issue_formats:
+            await issue_format.handler(self.profile).receive_credential(
+                cred_ex_record, cred_issue_message
+            )
+            handled_formats.append(issue_format)
 
-            if len(handled_formats) == 0:
-                raise V20CredManagerError("No supported credential formats received.")
+        if len(handled_formats) == 0:
+            raise V20CredManagerError("No supported credential formats received.")
 
-            cred_ex_record.cred_issue = cred_issue_message
-            cred_ex_record.state = V20CredExRecord.STATE_CREDENTIAL_RECEIVED
+        cred_ex_record.cred_issue = cred_issue_message
+        cred_ex_record.state = V20CredExRecord.STATE_CREDENTIAL_RECEIVED
 
         async with self._profile.session() as session:
             await cred_ex_record.save(session, reason="receive v2.0 credential issue")
@@ -646,11 +655,13 @@ class V20CredManager:
                 # FIXME - re-fetch record to check state, apply transactional update
                 await cred_ex_record.save(session, reason="store credential v2.0")
 
-                if cred_ex_record.auto_remove:
-                    await cred_ex_record.delete_record(session)  # all done: delete
+            if cred_ex_record.auto_remove:
+                await self.delete_cred_ex_record(cred_ex_record.cred_ex_id)
 
-        except StorageError as err:
-            LOGGER.exception(err)  # holder still owes an ack: carry on
+        except StorageError:
+            LOGGER.exception(
+                "Error sending credential ack"
+            )  # holder still owes an ack: carry on
 
         responder = self._profile.inject_or(BaseResponder)
         if responder:
@@ -667,7 +678,7 @@ class V20CredManager:
         return cred_ex_record, cred_ack_message
 
     async def receive_credential_ack(
-        self, cred_ack_message: V20CredAck, connection_id: str
+        self, cred_ack_message: V20CredAck, connection_id: Optional[str]
     ) -> V20CredExRecord:
         """
         Receive credential ack from holder.
@@ -682,12 +693,11 @@ class V20CredManager:
         """
         # FIXME use transaction, fetch for_update
         async with self._profile.session() as session:
-            cred_ex_record = await (
-                V20CredExRecord.retrieve_by_conn_and_thread(
-                    session,
-                    connection_id,
-                    cred_ack_message._thread_id,
-                )
+            cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
+                session,
+                connection_id,
+                cred_ack_message._thread_id,
+                role=V20CredExRecord.ROLE_ISSUER,
             )
 
             cred_ex_record.state = V20CredExRecord.STATE_DONE
@@ -724,15 +734,13 @@ class V20CredManager:
         """
         # FIXME use transaction, fetch for_update
         async with self._profile.session() as session:
-            cred_ex_record = await (
-                V20CredExRecord.retrieve_by_conn_and_thread(
-                    session,
-                    connection_id,
-                    message._thread_id,
-                )
+            cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
+                session,
+                connection_id,
+                message._thread_id,
             )
 
-            cred_ex_record.state = None
+            cred_ex_record.state = V20CredExRecord.STATE_ABANDONED
             code = message.description.get(
                 "code",
                 ProblemReportReason.ISSUANCE_ABANDONED.value,

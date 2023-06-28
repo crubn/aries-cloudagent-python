@@ -2,7 +2,7 @@
 
 import logging
 
-from typing import Any, Mapping, Union
+from typing import Any, Mapping, Optional, Union
 
 from marshmallow import fields, validate
 
@@ -21,6 +21,7 @@ from ..messages.presentation_request import (
     PresentationRequest,
     PresentationRequestSchema,
 )
+from ..messages.presentation_webhook import V10PresentationExchangeWebhook
 
 from . import UNENCRYPTED_TAGS
 
@@ -54,12 +55,13 @@ class V10PresentationExchange(BaseExchangeRecord):
     STATE_PRESENTATION_RECEIVED = "presentation_received"
     STATE_VERIFIED = "verified"
     STATE_PRESENTATION_ACKED = "presentation_acked"
+    STATE_ABANDONED = "abandoned"
 
     def __init__(
         self,
         *,
         presentation_exchange_id: str = None,
-        connection_id: str = None,
+        connection_id: Optional[str] = None,
         thread_id: str = None,
         initiator: str = None,
         role: str = None,
@@ -73,7 +75,9 @@ class V10PresentationExchange(BaseExchangeRecord):
         ] = None,  # aries message
         presentation: Union[IndyProof, Mapping] = None,  # indy proof
         verified: str = None,
+        verified_msgs: list = None,
         auto_present: bool = False,
+        auto_verify: bool = False,
         error_msg: str = None,
         trace: bool = False,  # backward compat: BaseRecord.from_storage()
         **kwargs,
@@ -94,7 +98,9 @@ class V10PresentationExchange(BaseExchangeRecord):
         )
         self._presentation = IndyProof.serde(presentation)
         self.verified = verified
+        self.verified_msgs = verified_msgs
         self.auto_present = auto_present
+        self.auto_verify = auto_verify
         self.error_msg = error_msg
 
     @property
@@ -158,6 +164,7 @@ class V10PresentationExchange(BaseExchangeRecord):
         self,
         session: ProfileSession,
         *,
+        state: str = None,
         reason: str = None,
         log_params: Mapping[str, Any] = None,
         log_override: bool = False,
@@ -172,10 +179,10 @@ class V10PresentationExchange(BaseExchangeRecord):
             override: Override configured logging regimen, print to stderr instead
         """
 
-        if self._last_state is None:  # already done
+        if self._last_state == state:  # already done
             return
 
-        self.state = None
+        self.state = state or V10PresentationExchange.STATE_ABANDONED
         if reason:
             self.error_msg = reason
 
@@ -189,6 +196,33 @@ class V10PresentationExchange(BaseExchangeRecord):
         except StorageError as err:
             LOGGER.exception(err)
 
+    # Override
+    async def emit_event(self, session: ProfileSession, payload: Any = None):
+        """
+        Emit an event.
+
+        Args:
+            session: The profile session to use
+            payload: The event payload
+        """
+
+        if not self.RECORD_TOPIC:
+            return
+
+        if self.state:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}::{self.state}"
+        else:
+            topic = f"{self.EVENT_NAMESPACE}::{self.RECORD_TOPIC}"
+
+        if session.profile.settings.get("debug.webhooks"):
+            if not payload:
+                payload = self.serialize()
+        else:
+            payload = V10PresentationExchangeWebhook(**self.__dict__)
+            payload = payload.__dict__
+
+        await session.profile.notify(topic, payload)
+
     @property
     def record_value(self) -> Mapping:
         """Accessor for the JSON record value generated for this credential exchange."""
@@ -201,8 +235,10 @@ class V10PresentationExchange(BaseExchangeRecord):
                     "role",
                     "state",
                     "auto_present",
+                    "auto_verify",
                     "error_msg",
                     "verified",
+                    "verified_msgs",
                     "trace",
                 )
             },
@@ -290,10 +326,20 @@ class V10PresentationExchangeSchema(BaseExchangeSchema):
         example="true",
         validate=validate.OneOf(["true", "false"]),
     )
+    verified_msgs = fields.List(
+        fields.Str(
+            required=False,
+            description="Proof verification warning or error information",
+        ),
+        required=False,
+    )
     auto_present = fields.Bool(
         required=False,
         description="Prover choice to auto-present proof as verifier requests",
         example=False,
+    )
+    auto_verify = fields.Bool(
+        required=False, description="Verifier choice to auto-verify proof presentation"
     )
     error_msg = fields.Str(
         required=False, description="Error message", example="Invalid structure"

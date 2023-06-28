@@ -24,12 +24,13 @@ from ...wallet.util import (
     str_to_b64,
     unpad,
 )
-from ...wallet.key_type import KeyType
+from ...wallet.key_type import ED25519
 from ...did.did_key import DIDKey
 from ..models.base import BaseModel, BaseModelError, BaseModelSchema
 from ..valid import (
     BASE64,
     BASE64URL_NO_PAD,
+    DictOrDictListField,
     INDY_ISO8601_DATETIME,
     JWS_HEADER_KID,
     SHA256,
@@ -201,7 +202,7 @@ def did_key(verkey: str) -> str:
     if verkey.startswith("did:key:"):
         return verkey
 
-    return DIDKey.from_public_key_b58(verkey, KeyType.ED25519).did
+    return DIDKey.from_public_key_b58(verkey, ED25519).did
 
 
 def raw_key(verkey: str) -> str:
@@ -228,7 +229,7 @@ class AttachDecoratorData(BaseModel):
         sha256_: str = None,
         links_: Union[Sequence[str], str] = None,
         base64_: str = None,
-        json_: dict = None,
+        json_: Union[Sequence[dict], dict] = None,
     ):
         """
         Initialize decorator data.
@@ -414,7 +415,7 @@ class AttachDecoratorData(BaseModel):
                 )
             self.jws_ = AttachDecoratorDataJWS.deserialize(jws)
 
-    async def verify(self, wallet: BaseWallet) -> bool:
+    async def verify(self, wallet: BaseWallet, signer_verkey: str = None) -> bool:
         """
         Verify the signature(s).
 
@@ -428,7 +429,7 @@ class AttachDecoratorData(BaseModel):
         assert self.jws
 
         b64_payload = unpad(set_urlsafe_b64(self.base64, True))
-
+        verkey_to_check = []
         for sig in [self.jws] if self.signatures == 1 else self.jws.signatures:
             b64_protected = sig.protected
             b64_sig = sig.signature
@@ -438,10 +439,14 @@ class AttachDecoratorData(BaseModel):
             sign_input = (b64_protected + "." + b64_payload).encode("ascii")
             b_sig = b64_to_bytes(b64_sig, urlsafe=True)
             verkey = bytes_to_b58(b64_to_bytes(protected["jwk"]["x"], urlsafe=True))
-            if not await wallet.verify_message(
-                sign_input, b_sig, verkey, KeyType.ED25519
-            ):
+            encoded_pk = DIDKey.from_did(protected["jwk"]["kid"]).public_key_b58
+            verkey_to_check.append(encoded_pk)
+            if not await wallet.verify_message(sign_input, b_sig, verkey, ED25519):
                 return False
+            if not await wallet.verify_message(sign_input, b_sig, encoded_pk, ED25519):
+                return False
+        if signer_verkey and signer_verkey not in verkey_to_check:
+            return False
         return True
 
     def __eq__(self, other):
@@ -484,7 +489,7 @@ class AttachDecoratorDataSchema(BaseModelSchema):
         required=False,
         data_key="jws",
     )
-    json_ = fields.Dict(
+    json_ = DictOrDictListField(
         description="JSON-serialized data",
         required=False,
         example='{"sample": "content"}',
@@ -611,7 +616,7 @@ class AttachDecorator(BaseModel):
     @classmethod
     def data_json(
         cls,
-        mapping: dict,
+        mapping: Union[Sequence[dict], dict],
         *,
         ident: str = None,
         description: str = None,

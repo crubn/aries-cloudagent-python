@@ -19,7 +19,7 @@ from ...storage.record import StorageRecord
 from ..util import datetime_to_str, time_now
 from ..valid import INDY_ISO8601_DATETIME
 
-from .base import BaseModel, BaseModelSchema
+from .base import BaseModel, BaseModelSchema, BaseModelError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ class BaseRecord(BaseModel):
     EVENT_NAMESPACE: str = "acapy::record"
     LOG_STATE_FLAG = None
     TAG_NAMES = {"state"}
+    STATE_DELETED = "deleted"
 
     def __init__(
         self,
@@ -89,6 +90,7 @@ class BaseRecord(BaseModel):
         *,
         created_at: Union[str, datetime] = None,
         updated_at: Union[str, datetime] = None,
+        new_with_id: bool = False,
     ):
         """Initialize a new BaseRecord."""
         if not self.RECORD_TYPE:
@@ -99,6 +101,7 @@ class BaseRecord(BaseModel):
             )
         self._id = id
         self._last_state = state
+        self._new_with_id = new_with_id
         self.state = state
         self.created_at = datetime_to_str(created_at)
         self.updated_at = datetime_to_str(updated_at)
@@ -218,7 +221,11 @@ class BaseRecord(BaseModel):
 
     @classmethod
     async def retrieve_by_id(
-        cls: Type[RecordType], session: ProfileSession, record_id: str
+        cls: Type[RecordType],
+        session: ProfileSession,
+        record_id: str,
+        *,
+        for_update=False,
     ) -> RecordType:
         """
         Retrieve a stored record by ID.
@@ -230,7 +237,7 @@ class BaseRecord(BaseModel):
 
         storage = session.inject(BaseStorage)
         result = await storage.get_record(
-            cls.RECORD_TYPE, record_id, {"retrieveTags": False}
+            cls.RECORD_TYPE, record_id, {"forUpdate": for_update, "retrieveTags": False}
         )
         vals = json.loads(result.value)
         return cls.from_storage(record_id, vals)
@@ -241,6 +248,8 @@ class BaseRecord(BaseModel):
         session: ProfileSession,
         tag_filter: dict,
         post_filter: dict = None,
+        *,
+        for_update=False,
     ) -> RecordType:
         """
         Retrieve a record by tag filter.
@@ -256,7 +265,7 @@ class BaseRecord(BaseModel):
         rows = await storage.find_all_records(
             cls.RECORD_TYPE,
             cls.prefix_tag_filter(tag_filter),
-            options={"retrieveTags": False},
+            options={"forUpdate": for_update, "retrieveTags": False},
         )
         found = None
         for record in rows:
@@ -321,7 +330,10 @@ class BaseRecord(BaseModel):
                 positive=False,
                 alt=alt,
             ):
-                result.append(cls.from_storage(record.id, vals))
+                try:
+                    result.append(cls.from_storage(record.id, vals))
+                except BaseModelError as err:
+                    raise BaseModelError(f"{err}, for record id {record.id}")
         return result
 
     async def save(
@@ -349,15 +361,17 @@ class BaseRecord(BaseModel):
         try:
             self.updated_at = time_now()
             storage = session.inject(BaseStorage)
-            if self._id:
+            if self._id and not self._new_with_id:
                 record = self.storage_record
                 await storage.update_record(record, record.value, record.tags)
                 new_record = False
             else:
-                self._id = str(uuid.uuid4())
+                if not self._id:
+                    self._id = str(uuid.uuid4())
                 self.created_at = self.updated_at
                 await storage.add_record(self.storage_record)
                 new_record = True
+                self._new_with_id = False
         finally:
             params = {self.RECORD_TYPE: self.serialize()}
             if log_params:
@@ -405,8 +419,11 @@ class BaseRecord(BaseModel):
 
         if self._id:
             storage = session.inject(BaseStorage)
+            if self.state:
+                self._previous_state = self.state
+                self.state = BaseRecord.STATE_DELETED
+                await self.emit_event(session, self.serialize())
             await storage.delete_record(self.storage_record)
-        # FIXME - update state and send webhook?
 
     async def emit_event(self, session: ProfileSession, payload: Any = None):
         """
@@ -480,6 +497,24 @@ class BaseRecord(BaseModel):
         if type(other) is type(self):
             return self.value == other.value and self.tags == other.tags
         return False
+
+    @classmethod
+    def get_attributes_by_prefix(cls, prefix: str, walk_mro: bool = True):
+        """
+        List all values for attributes with common prefix.
+
+        Args:
+            prefix: Common prefix to look for
+            walk_mro: Walk MRO to find attributes inherited from superclasses
+        """
+
+        bases = cls.__mro__ if walk_mro else [cls]
+        return [
+            vars(base)[name]
+            for base in bases
+            for name in vars(base)
+            if name.startswith(prefix)
+        ]
 
 
 class BaseExchangeRecord(BaseRecord):

@@ -186,7 +186,9 @@ class DemoAgent:
         self.proc = None
         self.client_session: ClientSession = ClientSession()
 
-        if self.endorser_role and not seed:
+        if self.endorser_role and self.endorser_role == "author":
+            seed = None
+        elif self.endorser_role and not seed:
             seed = "random"
         rand_name = str(random.randint(100_000, 999_999))
         self.seed = (
@@ -195,7 +197,7 @@ class DemoAgent:
             else seed
         )
         self.storage_type = params.get("storage_type")
-        self.wallet_type = params.get("wallet_type") or "indy"
+        self.wallet_type = params.get("wallet_type") or "askar"
         self.wallet_name = (
             params.get("wallet_name") or self.ident.lower().replace(" ", "") + rand_name
         )
@@ -211,6 +213,7 @@ class DemoAgent:
             self.agency_wallet_did = self.did
             self.agency_wallet_key = self.wallet_key
 
+        self.multi_write_ledger_url = None
         if self.genesis_txn_list:
             updated_config_list = []
             with open(self.genesis_txn_list, "r") as stream:
@@ -223,6 +226,10 @@ class DemoAgent:
                         "$LEDGER_HOST", str(self.external_host)
                     )
                 updated_config_list.append(config)
+                if "is_write" in config and config["is_write"]:
+                    self.multi_write_ledger_url = config["genesis_url"].replace(
+                        "/genesis", ""
+                    )
             with open(self.genesis_txn_list, "w") as file:
                 documents = yaml.dump(updated_config_list, file)
 
@@ -426,6 +433,7 @@ class DemoAgent:
                         ("--auto-request-endorsement",),
                         ("--auto-write-transactions",),
                         ("--auto-create-revocation-transactions",),
+                        ("--auto-promote-author-did"),
                         ("--endorser-alias", "endorser"),
                     ]
                 )
@@ -476,7 +484,10 @@ class DemoAgent:
             # if registering a did for issuing indy credentials, publish the did on the ledger
             self.log(f"Registering {self.ident} ...")
             if not ledger_url:
-                ledger_url = LEDGER_URL
+                if self.multi_write_ledger_url:
+                    ledger_url = self.multi_write_ledger_url
+                else:
+                    ledger_url = LEDGER_URL
             if not ledger_url:
                 ledger_url = f"http://{self.external_host}:9000"
             data = {"alias": alias or self.ident}
@@ -484,26 +495,34 @@ class DemoAgent:
                 if self.endorser_role == "endorser":
                     role = "ENDORSER"
                 else:
-                    role = ""
-            data["role"] = role
+                    role = None
+            if role:
+                data["role"] = role
             if did and verkey:
                 data["did"] = did
                 data["verkey"] = verkey
             else:
                 data["seed"] = self.seed
-            async with self.client_session.post(
-                ledger_url + "/register", json=data
-            ) as resp:
+            if role is None or role == "":
+                # if author using endorser register nym and wait for endorser ...
+                resp = await self.admin_POST("/ledger/register-nym", params=data)
+                await asyncio.sleep(3.0)
+                nym_info = data
+            else:
+                log_msg("using ledger: " + ledger_url + "/register")
+                resp = await self.client_session.post(
+                    ledger_url + "/register", json=data
+                )
                 if resp.status != 200:
                     raise Exception(
                         f"Error registering DID {data}, response code {resp.status}"
                     )
                 nym_info = await resp.json()
-                self.did = nym_info["did"]
-                self.log(f"nym_info: {nym_info}")
-                if self.multitenant:
-                    if not self.agency_wallet_did:
-                        self.agency_wallet_did = self.did
+            self.did = nym_info["did"]
+            self.log(f"nym_info: {nym_info}")
+            if self.multitenant:
+                if not self.agency_wallet_did:
+                    self.agency_wallet_did = self.did
             self.log(f"Registered DID: {self.did}")
         elif cred_type == CRED_FORMAT_JSON_LD:
             # TODO register a did:key with appropriate signature type
@@ -519,6 +538,7 @@ class DemoAgent:
         mediator_agent=None,
         cred_type: str = CRED_FORMAT_INDY,
         endorser_agent=None,
+        taa_accept=False,
     ):
         if webhook_port is not None:
             await self.listen_webhooks(webhook_port)
@@ -533,6 +553,9 @@ class DemoAgent:
             wallet_params = await self.get_id_and_token(self.wallet_name)
             self.managed_wallet_params["wallet_id"] = wallet_params["id"]
             self.managed_wallet_params["token"] = wallet_params["token"]
+
+            if taa_accept:
+                await self.taa_accept()
 
             self.log(f"Switching to AGENCY wallet {target_wallet_name}")
             return False
@@ -553,6 +576,9 @@ class DemoAgent:
                 self.managed_wallet_params["wallet_id"] = wallet_params["id"]
                 self.managed_wallet_params["token"] = wallet_params["token"]
 
+                if taa_accept:
+                    await self.taa_accept()
+
                 self.log(f"Switching to EXISTING wallet {target_wallet_name}")
                 return False
 
@@ -571,6 +597,20 @@ class DemoAgent:
         new_wallet = await self.agency_admin_POST("/multitenancy/wallet", wallet_params)
         self.log("New wallet params:", new_wallet)
         self.managed_wallet_params = new_wallet
+
+        # if endorser, endorse the wallet ledger operations
+        if endorser_agent:
+            self.log("Connect sub-wallet to endorser ...")
+            if not await connect_wallet_to_endorser(self, endorser_agent):
+                raise Exception("Endorser setup FAILED :-(")
+        # if mediation, mediate the wallet connections
+        if mediator_agent:
+            if not await connect_wallet_to_mediator(self, mediator_agent):
+                log_msg("Mediation setup FAILED :-(")
+                raise Exception("Mediation setup FAILED :-(")
+        if taa_accept:
+            await self.taa_accept()
+
         if public_did:
             if cred_type == CRED_FORMAT_INDY:
                 # assign public did
@@ -580,7 +620,13 @@ class DemoAgent:
                     did=new_did["result"]["did"],
                     verkey=new_did["result"]["verkey"],
                 )
-                await self.admin_POST("/wallet/did/public?did=" + self.did)
+                if self.endorser_role and self.endorser_role == "author":
+                    if endorser_agent:
+                        await self.admin_POST("/wallet/did/public?did=" + self.did)
+                        await asyncio.sleep(3.0)
+                else:
+                    await self.admin_POST("/wallet/did/public?did=" + self.did)
+                    await asyncio.sleep(3.0)
             elif cred_type == CRED_FORMAT_JSON_LD:
                 # create did of appropriate type
                 data = {"method": DID_METHOD_KEY, "options": {"key_type": KEY_TYPE_BLS}}
@@ -591,17 +637,6 @@ class DemoAgent:
             else:
                 # todo ignore for now
                 pass
-
-        # if mediation, mediate the wallet connections
-        if mediator_agent:
-            if not await connect_wallet_to_mediator(self, mediator_agent):
-                log_msg("Mediation setup FAILED :-(")
-                raise Exception("Mediation setup FAILED :-(")
-
-        # if endorser, endorse the wallet ledger operations
-        if endorser_agent:
-            if not await connect_wallet_to_endorser(self, endorser_agent):
-                raise Exception("Endorser setup FAILED :-(")
 
         self.log(f"Created NEW wallet {target_wallet_name}")
         return True
@@ -689,7 +724,7 @@ class DemoAgent:
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
-                self.proc.wait(timeout=0.5)
+                self.proc.wait(timeout=1.5)
                 self.log(f"Exited with return code {self.proc.returncode}")
             except subprocess.TimeoutExpired:
                 msg = "Process did not terminate in time"
@@ -714,7 +749,7 @@ class DemoAgent:
         if RUN_MODE == "pwd":
             self.webhook_url = f"http://localhost:{str(webhook_port)}/webhooks"
         else:
-            self.webhook_url = (
+            self.webhook_url = self.external_webhook_target or (
                 f"http://{self.external_host}:{str(webhook_port)}/webhooks"
             )
         app = web.Application()
@@ -763,6 +798,8 @@ class DemoAgent:
             return web.Response(status=404)
         proof_reg_txn = proof_exch["presentation_request_dict"]
         proof_reg_txn["~service"] = await self.service_decorator()
+        if request.headers.get("Accept") == "application/json":
+            return web.json_response(proof_reg_txn)
         objJsonStr = json.dumps(proof_reg_txn)
         objJsonB64 = base64.b64encode(objJsonStr.encode("ascii"))
         service_url = self.webhook_url
@@ -803,6 +840,23 @@ class DemoAgent:
     async def handle_revocation_registry(self, message):
         reg_id = message.get("revoc_reg_id", "(undetermined)")
         self.log(f"Revocation registry: {reg_id} state: {message['state']}")
+
+    async def handle_mediation(self, message):
+        self.log(f"Received mediation message ...\n")
+
+    async def taa_accept(self):
+        taa_info = await self.admin_GET("/ledger/taa")
+        if taa_info["result"]["taa_required"]:
+            taa_accept = {
+                "mechanism": list(taa_info["result"]["aml_record"]["aml"].keys())[0],
+                "version": taa_info["result"]["taa_record"]["version"],
+                "text": taa_info["result"]["taa_record"]["text"],
+            }
+            self.log(f"Accepting TAA with: {taa_accept}")
+            await self.admin_POST(
+                "/ledger/taa/accept",
+                data=taa_accept,
+            )
 
     async def admin_request(
         self, method, path, data=None, text=False, params=None, headers=None
@@ -1340,7 +1394,8 @@ class EndorserAgent(DemoAgent):
         # author responds to a multi-use invitation
         if message["state"] == "request":
             self.endorser_connection_id = message["connection_id"]
-            self._connection_ready = asyncio.Future()
+            if not self._connection_ready:
+                self._connection_ready = asyncio.Future()
 
         # finish off the connection
         if message["connection_id"] == self.endorser_connection_id:
@@ -1359,6 +1414,9 @@ class EndorserAgent(DemoAgent):
 
     async def handle_basicmessages(self, message):
         self.log("Received message:", message["content"])
+
+    async def handle_out_of_band(self, message):
+        self.log("Received message:", message)
 
 
 async def start_endorser_agent(
@@ -1417,10 +1475,10 @@ async def connect_wallet_to_endorser(agent, endorser_agent):
     # Generate an invitation
     log_msg("Generate endorser invite ...")
     endorser_agent._connection_ready = asyncio.Future()
-    endorser_connection = await endorser_agent.admin_POST(
-        "/connections/create-invitation"
+    endorser_agent.endorser_connection_id = None
+    endorser_connection = await endorser_agent.get_invite(
+        use_did_exchange=endorser_agent.use_did_exchange,
     )
-    endorser_agent.endorser_connection_id = endorser_connection["connection_id"]
 
     # accept the invitation
     log_msg("Accept endorser invite ...")

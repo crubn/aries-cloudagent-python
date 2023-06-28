@@ -4,13 +4,12 @@ There are several demos available for ACA-Py mostly (but not only) aimed at deve
 
 ## Table of Contents <!-- omit in toc -->
 
-- [The IIWBook Demo](#the-iiwbook-demo)
 - [The Alice/Faber Python demo](#the-alicefaber-python-demo)
   - [Running in a Browser](#running-in-a-browser)
   - [Running in Docker](#running-in-docker)
   - [Running Locally](#running-locally)
     - [Installing Prerequisites](#installing-prerequisites)
-    - [Start a local indy ledger](#start-a-local-indy-ledger)
+    - [Start a local Indy ledger](#start-a-local-indy-ledger)
     - [Genesis File handling](#genesis-file-handling)
     - [Run a local Postgres instance](#run-a-local-postgres-instance)
     - [Optional: Run a von-network ledger browser](#optional-run-a-von-network-ledger-browser)
@@ -20,20 +19,17 @@ There are several demos available for ACA-Py mostly (but not only) aimed at deve
     - [Issuing and Proving Credentials](#issuing-and-proving-credentials)
 - [Additional Options in the Alice/Faber demo](#additional-options-in-the-alicefaber-demo)
   - [Revocation](#revocation)
-  - [Mediation](#mediation)
-  - [Multi-tenancy](#multi-tenancy)
-  - [Multi-ledger](#multi-ledger)
   - [DID Exchange](#did-exchange)
   - [Endorser](#endorser)
-  - [Run Askar Backend](#run-askar-backend)
+  - [Run Indy-SDK Backend](#run-indy-sdk-backend)
+  - [Mediation](#mediation)
+  - [Multi-ledger](#multi-ledger)
+  - [Multi-tenancy](#multi-tenancy)
+  - [Multi-tenancy *with Mediation*!!!](#multi-tenancy-with-mediation)
 - [Learning about the Alice/Faber code](#learning-about-the-alicefaber-code)
 - [OpenAPI (Swagger) Demo](#openapi-swagger-demo)
 - [Performance Demo](#performance-demo)
 - [Coding Challenge: Adding ACME](#coding-challenge-adding-acme)
-
-## The IIWBook Demo
-
-The IIWBook demo is a real (play) self-sovereign identity demonstration. During the demo, you will get a mobile agent (sorry - IOS only right now), and use that agent to connect with several enterprise services to collect and prove credentials. The two services in the demo (the [email verification service](https://github.com/bcgov/indy-email-verification) and [IIWBook](https://github.com/bcgov/iiwbook)) are both instances of ACA-Py, and all the agents are using DIDComm to communicate. Learn about and run the demo at [https://vonx.io/how_to/iiwbook](https://vonx.io/how_to/iiwbook). Developers, when you are ready, check out the code in the repos of the two services to see how they implement Django web server-based controller and agent.
 
 ## The Alice/Faber Python demo
 
@@ -41,7 +37,7 @@ The Alice/Faber demo is the (in)famous first verifiable credentials demo. Alice,
 
 ### Running in a Browser
 
-In your browser, go to the docker playground service [Play with VON](http://play-with-von.vonx.io) (from the BC Gov). On the title screen, click "Start". On the next screen, click (in the left menu) "+Add a new instance".  That will start up a terminal in your browser. Run the following commands to start the Faber agent:
+In your browser, go to the docker playground service [Play with Docker](https://labs.play-with-docker.com/). On the title screen, click "Start". On the next screen, click (in the left menu) "+Add a new instance".  That will start up a terminal in your browser. Run the following commands to start the Faber agent:
 
 ```bash
 git clone https://github.com/hyperledger/aries-cloudagent-python
@@ -63,19 +59,20 @@ Jump to the [Follow the Script](#follow-the-script) section below for further in
 
 ### Running in Docker
 
-Running the demo in docker requires having a `von-network` (a Hyperledger Indy public ledger sandbox) instance running in docker locally. See the [Running the Network Locally](https://github.com/bcgov/von-network#running-the-network-locally) section of the `von-network` readme file for more info.
+Running the demo in docker requires having a `von-network` (a Hyperledger Indy public ledger sandbox) instance running in docker locally. See the [VON Network Tutorial](https://github.com/bcgov/von-network/blob/main/docs/UsingVONNetwork.md) for guidance
+on starting and stopping your own local Hyperledger Indy instance.
 
 Open three `bash` shells. For Windows users, `git-bash` is highly recommended. bash is the default shell in Linux and Mac terminal sessions.
 
-In the first terminal window, start `von-network` by following the [Running the Network Locally](https://github.com/bcgov/von-network#running-the-network-locally) instructions.
+In the first terminal window, start `von-network` by following the [Building and Starting](https://github.com/bcgov/von-network/blob/main/docs/UsingVONNetwork.md#building-and-starting) instructions.
 
-In the second terminal, change directory into `demo` directory of your clone of this repository. Start the `faber` agent by issuing the following command:
+In the second terminal, change directory into `demo` directory of your clone of the Aries Cloud Agent Python repository. Start the `faber` agent by issuing the following command:
 
 ``` bash
   ./run_demo faber
 ```
 
-In the third terminal, change directory into `demo` directory of your clone of this repository. Start the `alice` agent by issuing the following command:
+In the third terminal, change directory into `demo` directory of your clone of the Aries Cloud Agent Python repository. Start the `alice` agent by issuing the following command:
 
 ``` bash
   ./run_demo alice
@@ -87,6 +84,8 @@ Jump to the [Follow the Script](#follow-the-script) section below for further in
 
 The following is an approach to to running the Alice and Faber demo using Python3 running on a bare machine. There are other ways to run the components, but this covers the general approach.
 
+We don't recommend this approach if you are just trying this demo, as you will likely run into issues with the specific setup of your machine.
+
 #### Installing Prerequisites
 
 We assume you have a running Python 3 environment.  To install the prerequisites specific to running the agent/controller examples in your Python environment, run the following command from this repo's `demo` folder. The precise command to run may vary based on your Python environment setup.
@@ -97,11 +96,15 @@ pip3 install -r demo/requirements.txt
 
 While that process will include the installation of the Indy python prerequisite, you still have to build and install the `libindy` code for your platform. Follow the [installation instructions](https://github.com/hyperledger/indy-sdk#installing-the-sdk) in the indy-sdk repo for your platform.
 
-#### Start a local indy ledger
+#### Start a local Indy ledger
 
-Use instructions in the [indy-sdk repo](https://github.com/hyperledger/indy-sdk#how-to-start-local-nodes-pool-with-docker) to run a local ledger.
+Start a local `von-network` Hyperledger Indy network running in Docker by following the VON Network [Building and Starting](https://github.com/bcgov/von-network/blob/main/docs/UsingVONNetwork.md#building-and-starting) instructions.
+
+We strongly recommend you use Docker for the local Indy network until you really, really need to know the details of running an Indy Node instance on a bare machine.
 
 #### Genesis File handling
+
+> Assuming you followed our advice and are using a VON Network instance of Hyperledger Indy, you can ignore this section. If you started the Indy ledger **without** using VON Network, this information might be helpful.
 
 An Aries agent (or other client) connecting to an Indy ledger must know the contents of the `genesis` file for the ledger. The genesis file lets the agent/client know the IP addresses of the initial nodes of the ledger, and the agent/client sends ledger requests to those IP addresses. When using the `indy-sdk` ledger, look for the instructions in that repo for how to find/update the ledger genesis file, and note the path to that file on your local system.
 
@@ -117,7 +120,9 @@ docker run --name some-postgres -e POSTGRES_PASSWORD=mysecretpassword -d -p 5432
 
 #### Optional: Run a von-network ledger browser
 
-If you want to be able to browse your local ledger as you run the demo, clone the [von-network](https://github.com/bcgov/von-network) repo, go into the root of the cloned instance and run the following command, replacing the `/path/to/local-genesis.txt` with a path to the same genesis file as was used in starting the ledger.
+If you followed our advice and are using a VON Network instance of Hyperledger Indy, you can ignore this section, as you already have a Ledger browser running, accessible on http://localhost:9000.
+
+ If you started the Indy ledger **without** using VON Network, and you want to be able to browse your local ledger as you run the demo, clone the [von-network](https://github.com/bcgov/von-network) repo, go into the root of the cloned instance and run the following command, replacing the `/path/to/local-genesis.txt` with a path to the same genesis file as was used in starting the ledger.
 
 ``` bash
 GENESIS_FILE=/path/to/local-genesis.txt PORT=9000 REGISTER_NEW_DIDS=true python -m server.server
@@ -125,7 +130,19 @@ GENESIS_FILE=/path/to/local-genesis.txt PORT=9000 REGISTER_NEW_DIDS=true python 
 
 #### Run the Alice and Faber Controllers/Agents
 
-With the rest of the pieces running, you can run the Alice and Faber controllers and agents. To do so, `cd` into the `demo` folder your clone of this repo in two terminal windows and run the following, replacing the `/path/to/local-genesis.txt`.
+With the rest of the pieces running, you can run the Alice and Faber controllers and agents. To do so, `cd` into the `demo` folder your clone of this repo in two terminal windows.
+
+If you are using a VON Network instance of Hyperledger, run the following commands:
+
+``` bash
+DEFAULT_POSTGRES=true python3 -m runners.faber --port 8020
+```
+
+``` bash
+DEFAULT_POSTGRES=true python3 -m runners.alice --port 8030
+```
+
+If you started the Indy ledger **without** using VON Network, use the following commands, replacing the `/path/to/local-genesis.txt` with the one for your configuration.
 
 ``` bash
 GENESIS_FILE=/path/to/local-genesis.txt DEFAULT_POSTGRES=true python3 -m runners.faber --port 8020
@@ -135,7 +152,7 @@ GENESIS_FILE=/path/to/local-genesis.txt DEFAULT_POSTGRES=true python3 -m runners
 GENESIS_FILE=/path/to/local-genesis.txt DEFAULT_POSTGRES=true python3 -m runners.alice --port 8030
 ```
 
-Note that Alice and Faber will each use 5 ports, e.g. using the parameter `... --port 8020` actually uses ports 8020 through 8024. Feel free to use different ports if you want.
+Note that Alice and Faber will each use 5 ports, e.g., using the parameter `... --port 8020` actually uses ports 8020 through 8024. Feel free to use different ports if you want.
 
 Everything running?  See the [Follow the Script](#follow-the-script) section below for further instructions.
 
@@ -201,7 +218,7 @@ To enable support for revoking credentials, run the `faber` demo with the `--rev
 
 Note that you don't specify this option with `alice` because it's only applicable for the credential `issuer` (who has to enable revocation when creating a credential definition, and explicitely revoke credentials as appropriate; alice doesn't have to do anything special when revocation is enabled).
 
-You need to run a revocation registry in order to support revocation - the details are described in the [Alice gets a Phone](https://github.com/hyperledger/aries-cloudagent-python/blob/master/demo/AliceGetsAPhone.md#run-an-instance-of-indy-tails-server) demo instructions.
+You need to run an AnonCreds revocation registry tails server in order to support revocation - the details are described in the [Alice gets a Phone](https://github.com/hyperledger/aries-cloudagent-python/blob/master/demo/AliceGetsAPhone.md#run-an-instance-of-indy-tails-server) demo instructions.
 
 Faber will setup support for revocation automatically, and you will see an extra option in faber's menu to revoke a credential:
 
@@ -247,12 +264,12 @@ Note that you can't (currently) use the DID Exchange protocol to connect with an
 
 This is described in [Endorser.md](Endorser.md)
 
-### Run Askar Backend
+### Run Indy-SDK Backend
 
-This runs using the askar libraries instead of indy-sdk:
+This runs using the older (and not recommended) indy-sdk libraries instead of [Aries Askar](:uhttps://github.com/hyperledger/aries-ask):
 
 ```bash
-./run_demo faber --wallet-type askar
+./run_demo faber --wallet-type indy
 ```
 
 ### Mediation
@@ -263,17 +280,7 @@ To enable mediation, run the `alice` or `faber` demo with the `--mediation` opti
 ./run_demo faber --mediation
 ```
 
-This will start up a second "mediator" agent and automatically set the alice/faber connection to use the mediator.
-
-### Multi-tenancy
-
-To enable support for multi-tenancy, run the `alice` or `faber` demo with the `--multitenant` option:
-
-```bash
-./run_demo faber --multitenant
-```
-
-(This option can be used with both (or either) `alice` and/or `faber`.)
+This will start up a "mediator" agent with Alice or Faber and automatically set the alice/faber connection to use the mediator.
 
 ### Multi-ledger
 
@@ -284,6 +291,16 @@ To enable multiple ledger mode, run the `alice` or `faber` demo with the `--mult
 ```
 
 The configuration file for setting up multiple ledgers (for the demo) can be found at `./demo/multiple_ledger_config.yml`.
+
+### Multi-tenancy
+
+To enable support for multi-tenancy, run the `alice` or `faber` demo with the `--multitenant` option:
+
+```bash
+./run_demo faber --multitenant
+```
+
+(This option can be used with both (or either) `alice` and/or `faber`.)
 
 You will see an additional menu option to create new sub-wallets (or they can be considered to be "virtual agents").
 
@@ -395,6 +412,28 @@ To run the demo, make sure that you shut down any running Alice/Faber agents. Th
 The script starts both agents, runs the performance test, spits out performance results and shuts down the agents. Note that this is just one demonstration of how performance metrics tracking can be done with ACA-Py.
 
 A second version of the performance test can be run by adding the parameter `--routing` to the invocation above. The parameter triggers the example to run with Alice using a routing agent such that all messages pass through the routing agent between Alice and Faber. This is a good, simple example of how routing can be implemented with DIDComm agents.
+
+You can also run the demo against a postgres database using the following:
+
+```bash
+./run_demo performance --arg-file demo/postgres-indy-args.yml
+```
+
+(Obvs you need to be running a postgres database - the command to start postgres is in the yml file provided above.)
+
+You can tweak the number of credentials issued using the `--count` and `--batch` parameters, and you can run against an Askar database using the `--wallet-type askar` option (or run using indy-sdk using `--wallet-type indy`).
+
+An example full set of options is:
+
+```bash
+./run_demo performance --arg-file demo/postgres-indy-args.yml -c 10000 -b 10 --wallet-type askar
+```
+
+Or:
+
+```bash
+./run_demo performance --arg-file demo/postgres-indy-args.yml -c 10000 -b 10 --wallet-type indy
+```
 
 ## Coding Challenge: Adding ACME
 
