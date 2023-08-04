@@ -812,6 +812,7 @@ async def _create_free_offer(
     preview_spec: dict = None,
     comment: str = None,
     trace_msg: bool = None,
+    thread_id: str = None,
 ):
     """Create a credential offer and related exchange record."""
 
@@ -834,6 +835,7 @@ async def _create_free_offer(
         auto_issue=auto_issue,
         auto_remove=auto_remove,
         trace=trace_msg,
+        thread_id=thread_id
     )
 
     cred_manager = V20CredManager(profile)
@@ -953,6 +955,7 @@ async def credential_exchange_send_free_offer(request: web.BaseRequest):
     comment = body.get("comment")
     preview_spec = body.get("credential_preview")
     trace_msg = body.get("trace")
+    thread_id = body.get("thread_id")
 
     cred_ex_record = None
     conn_record = None
@@ -971,6 +974,7 @@ async def credential_exchange_send_free_offer(request: web.BaseRequest):
             preview_spec=preview_spec,
             comment=comment,
             trace_msg=trace_msg,
+            thread_id=thread_id
         )
         result = cred_ex_record.serialize()
 
