@@ -825,6 +825,7 @@ async def present_proof_create_request(request: web.BaseRequest):
         will_confirm=True,
         **_formats_attach(pres_request_spec, PRES_20_REQUEST, "request_presentations"),
     )
+    pres_request_message.assign_thread_id(body.get("thread_id"))
     auto_verify = body.get(
         "auto_verify", context.settings.get("debug.auto_verify_presentation")
     )

@@ -494,6 +494,7 @@ async def presentation_exchange_create_request(request: web.BaseRequest):
             )
         ],
     )
+    presentation_request_message.assign_thread_id(body.get("thread_id"))
     auto_verify = body.get(
         "auto_verify", context.settings.get("debug.auto_verify_presentation")
     )
