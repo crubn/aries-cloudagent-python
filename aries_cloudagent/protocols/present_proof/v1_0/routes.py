@@ -579,6 +579,7 @@ async def presentation_exchange_send_free_request(request: web.BaseRequest):
             )
         ],
     )
+    presentation_request_message.assign_thread_id(body.get("thread_id"))
     trace_msg = body.get("trace")
     presentation_request_message.assign_trace_decorator(
         context.settings,
