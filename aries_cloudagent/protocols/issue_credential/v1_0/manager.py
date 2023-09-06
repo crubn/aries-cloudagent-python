@@ -998,7 +998,7 @@ class CredentialManager:
                 cred_ex_record = (
                     await (
                         V10CredentialExchange.retrieve_by_connection_and_thread(
-                            txn, connection_id, message._thread_id, for_update=True
+                            txn, None, message._thread_id, for_update=True
                         )
                     )
                 )
@@ -1010,6 +1010,7 @@ class CredentialManager:
                 return None
 
             cred_ex_record.state = V10CredentialExchange.STATE_ABANDONED
+            cred_ex_record.connection_id = connection_id
             code = message.description.get(
                 "code",
                 ProblemReportReason.ISSUANCE_ABANDONED.value,

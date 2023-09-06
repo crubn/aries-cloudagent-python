@@ -478,10 +478,10 @@ class V20PresManager:
             pres_ex_record = await V20PresExRecord.retrieve_by_tag_filter(
                 session,
                 {"thread_id": message._thread_id},
-                {"connection_id": connection_id},
             )
 
             pres_ex_record.state = V20PresExRecord.STATE_ABANDONED
+            pres_ex_record.connection_id = connection_id
             code = message.description.get("code", ProblemReportReason.ABANDONED.value)
             pres_ex_record.error_msg = f"{code}: {message.description.get('en', code)}"
             await pres_ex_record.save(session, reason="received problem report")

@@ -736,11 +736,12 @@ class V20CredManager:
         async with self._profile.session() as session:
             cred_ex_record = await V20CredExRecord.retrieve_by_conn_and_thread(
                 session,
-                connection_id,
+                None,
                 message._thread_id,
             )
 
             cred_ex_record.state = V20CredExRecord.STATE_ABANDONED
+            cred_ex_record.connection_id = connection_id
             code = message.description.get(
                 "code",
                 ProblemReportReason.ISSUANCE_ABANDONED.value,
