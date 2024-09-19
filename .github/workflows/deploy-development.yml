@@ -1,0 +1,54 @@
+name: Deploy Development to App Runner
+on:
+  push:
+    branches: [development] # Trigger workflow on git push to main branch
+  workflow_dispatch: # Allow manual invocation of the workflow
+    inputs:
+      branch:
+        description: deploy given branch
+        required: true
+        type: string
+        default: development
+
+jobs:  
+  deploy:
+    runs-on: ubuntu-latest
+    # These permissions are needed to interact with GitHub's OIDC Token endpoint.
+    permissions:
+      id-token: write
+      contents: read
+    environment: development
+    
+    steps: 
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.inputs.branch }}    
+          
+      - name: Configure AWS credentials
+        id: aws-credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Use GitHub OIDC provider
+          role-to-assume: ${{ secrets.AWS_ASSUME_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2 
+
+      - name: Set image tage as current date & time
+        id: date
+        run: echo "IMAGE_TAG=$(date +'%Y-%m-%dT%H-%M-%S')" >> $GITHUB_ENV
+            
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: dev/acapy
+          PKG_TOKEN: ${{ secrets.PKG_TOKEN }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest . --build-arg PKG_TOKEN=$PKG_TOKEN
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
+          echo "Pushed $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG to AWS ECR"
